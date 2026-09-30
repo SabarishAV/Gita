@@ -1,0 +1,282 @@
+package com.gita.player
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+data class SongDetails(val art: Bitmap?, val album: String?, val year: String?)
+
+private fun decodeScaled(bytes: ByteArray, target: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= target) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+}
+
+fun loadSongDetails(context: Context, uri: Uri): SongDetails {
+    val r = MediaMetadataRetriever()
+    return try {
+        r.setDataSource(context, uri)
+        SongDetails(
+            art = r.embeddedPicture?.let { decodeScaled(it, 1000) },
+            album = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM),
+            year = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)
+        )
+    } catch (e: Exception) {
+        SongDetails(null, null, null)
+    } finally {
+        r.release()
+    }
+}
+
+@Composable
+fun SeekBar(
+    positionMs: Long,
+    durationMs: Long,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+    val fraction = dragFraction
+        ?: if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .height(32.dp)
+            .pointerInput(durationMs) {
+                detectTapGestures { offset ->
+                    if (durationMs > 0) {
+                        val f = (offset.x / size.width).coerceIn(0f, 1f)
+                        onSeek((f * durationMs).toLong())
+                    }
+                }
+            }
+            .pointerInput(durationMs) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                    },
+                    onDragEnd = {
+                        dragFraction?.let { onSeek((it * durationMs).toLong()) }
+                        dragFraction = null
+                    },
+                    onDragCancel = { dragFraction = null },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                    }
+                )
+            }
+    ) {
+        val w = size.width
+        val midY = size.height / 2
+        val x = w * fraction
+        val stroke = 3.dp.toPx()
+
+        drawLine(Color(0xFF3A3A38), Offset(0f, midY), Offset(w, midY), stroke)
+        drawLine(Silver, Offset(0f, midY), Offset(x, midY), stroke)
+
+        // metallic knob
+        drawCircle(Color(0xFF050505), 13.dp.toPx(), Offset(x, midY))
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(Color(0xFFF7F7F3), Color(0xFFB4B4B0), Color(0xFF6E6E6A)),
+                center = Offset(x - 3.dp.toPx(), midY - 3.dp.toPx()),
+                radius = 14.dp.toPx()
+            ),
+            radius = 10.dp.toPx(),
+            center = Offset(x, midY)
+        )
+    }
+}
+
+@Composable
+fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
+    val current by vm.current.collectAsState()
+    val isPlaying by vm.isPlaying.collectAsState()
+    val position by vm.position.collectAsState()
+    val duration by vm.duration.collectAsState()
+    val context = LocalContext.current
+
+    val song = current ?: return
+    val details by produceState<SongDetails?>(initialValue = null, key1 = song.id) {
+        value = null
+        value = withContext(Dispatchers.IO) { loadSongDetails(context, song.uri) }
+    }
+    val total = if (duration > 0) duration else song.durationMs
+
+    val albumLine = listOfNotNull(
+        details?.album?.takeIf { it.isNotBlank() },
+        details?.year?.takeIf { it.isNotBlank() }?.let { "($it)" }
+    ).joinToString(" ")
+
+    GitaBackground(Modifier.pointerInput(Unit) {}) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "Close",
+                    tint = SilverDim,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(32.dp)
+                        .clickable(onClick = onClose)
+                )
+                Text(
+                    text = "GITA",
+                    color = Silver,
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 30.sp,
+                    letterSpacing = 6.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+
+            val artShape = RoundedCornerShape(4.dp)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .padding(top = 24.dp)
+                    .fillMaxWidth(0.9f)
+                    .aspectRatio(1f)
+                    .clip(artShape)
+                    .background(Color(0xFF101010))
+                    .border(2.dp, MetalBrush, artShape)
+            ) {
+                val art = details?.art
+                if (art != null) {
+                    Image(
+                        bitmap = art.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    VinylFallback(playing = isPlaying)
+                }
+            }
+
+            Text(
+                text = song.title,
+                color = Silver,
+                fontWeight = FontWeight.Bold,
+                fontSize = 26.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 24.dp)
+            )
+            Text(
+                text = song.artist,
+                color = Silver.copy(alpha = 0.85f),
+                fontSize = 18.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            if (albumLine.isNotEmpty()) {
+                Text(
+                    text = albumLine,
+                    color = SilverDim,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+
+            SeekBar(
+                positionMs = position,
+                durationMs = total,
+                onSeek = { vm.seekTo(it) },
+                modifier = Modifier.padding(top = 24.dp)
+            )
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+            ) {
+                Text(formatDuration(position), color = SilverDim, fontSize = 12.sp)
+                Text(formatDuration(total), color = SilverDim, fontSize = 12.sp)
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 24.dp, bottom = 16.dp)
+            ) {
+                MetalButton(Glyph.Prev, onClick = { vm.previous() })
+                MetalRoundButton(
+                    glyph = if (isPlaying) Glyph.Pause else Glyph.Play,
+                    onClick = { vm.togglePlayPause() }
+                )
+                MetalButton(Glyph.Next, onClick = { vm.next() })
+            }
+        }
+    }
+}

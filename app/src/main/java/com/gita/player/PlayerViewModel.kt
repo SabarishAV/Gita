@@ -11,6 +11,8 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +24,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val favoritesStore = FavoritesStore(app)
     private var controller: MediaController? = null
+    private var progressJob: Job? = null
 
     private val controllerFuture = MediaController.Builder(
         app,
@@ -37,6 +40,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
 
+    private val _position = MutableStateFlow(0L)
+    val position: StateFlow<Long> = _position
+
+    private val _duration = MutableStateFlow(0L)
+    val duration: StateFlow<Long> = _duration
+
     val favorites: StateFlow<Set<Long>> = favoritesStore.favoriteIds
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
@@ -44,13 +53,28 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         controllerFuture.addListener({
             val c = controllerFuture.get()
             controller = c
+            c.repeatMode = Player.REPEAT_MODE_ALL
             c.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     _isPlaying.value = isPlaying
+                    if (isPlaying) startProgress() else stopProgress()
                 }
 
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     updateCurrent()
+                    refreshProgress()
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    refreshProgress()
+                }
+
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int
+                ) {
+                    refreshProgress()
                 }
             })
             syncWithController()
@@ -74,6 +98,28 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         _current.value = _songs.value.firstOrNull { it.id.toString() == id }
     }
 
+    private fun refreshProgress() {
+        val c = controller ?: return
+        _position.value = c.currentPosition.coerceAtLeast(0L)
+        _duration.value =
+            if (c.duration > 0) c.duration else (_current.value?.durationMs ?: 0L)
+    }
+
+    private fun startProgress() {
+        progressJob?.cancel()
+        progressJob = viewModelScope.launch {
+            while (true) {
+                refreshProgress()
+                delay(300)
+            }
+        }
+    }
+
+    private fun stopProgress() {
+        progressJob?.cancel()
+        refreshProgress()
+    }
+
     private fun syncWithController() {
         val c = controller ?: return
         val list = _songs.value
@@ -83,7 +129,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             c.prepare()
         }
         _isPlaying.value = c.isPlaying
+        if (c.isPlaying) startProgress()
         if (c.playWhenReady || c.currentPosition > 0) updateCurrent()
+        refreshProgress()
     }
 
     fun loadSongsFromDevice() {
@@ -116,7 +164,31 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun seekTo(ms: Long) {
+        controller?.seekTo(ms)
+        _position.value = ms
+    }
+
+    fun next() {
+        controller?.let {
+            it.seekToNext()
+            it.play()
+        }
+    }
+
+    fun previous() {
+        controller?.let {
+            it.seekToPrevious()
+            it.play()
+        }
+    }
+
     fun toggleFavorite(song: Song) {
         viewModelScope.launch { favoritesStore.toggle(song.id) }
+    }
+
+    override fun onCleared() {
+        MediaController.releaseFuture(controllerFuture)
+        super.onCleared()
     }
 }
