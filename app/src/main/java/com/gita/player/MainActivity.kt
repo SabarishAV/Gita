@@ -55,6 +55,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
+        }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(
                 android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT
@@ -116,12 +119,18 @@ fun GitaApp(vm: PlayerViewModel) {
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             )
+            Gramophone(
+                playing = isPlaying,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = 20.dp)
+            )
             Text(
                 text = if (granted) "${songs.size} TRACKS ON TAPE" else "PERMISSION NEEDED TO READ MUSIC",
                 color = Ink,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(top = 32.dp)
+                modifier = Modifier.padding(top = 16.dp)
             )
 
             LazyColumn(modifier = Modifier.weight(1f).padding(top = 16.dp)) {
@@ -221,14 +230,7 @@ fun SongRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Text(
-                text = if (isFavorite) "♥" else "♡",
-                color = Ink,
-                fontSize = 26.sp,
-                modifier = Modifier
-                    .clickable(onClick = onToggleFavorite)
-                    .padding(8.dp)
-            )
+            HeartIcon(filled = isFavorite, onClick = onToggleFavorite)
         }
         HorizontalDivider(color = Ink.copy(alpha = 0.25f))
     }

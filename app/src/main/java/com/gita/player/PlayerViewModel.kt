@@ -1,11 +1,15 @@
 package com.gita.player
 
 import android.app.Application
+import android.content.ComponentName
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,7 +21,12 @@ import kotlinx.coroutines.withContext
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val favoritesStore = FavoritesStore(app)
-    private val player = ExoPlayer.Builder(app).build()
+    private var controller: MediaController? = null
+
+    private val controllerFuture = MediaController.Builder(
+        app,
+        SessionToken(app, ComponentName(app, PlaybackService::class.java))
+    ).buildAsync()
 
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
     val songs: StateFlow<List<Song>> = _songs
@@ -32,52 +41,82 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     init {
-        player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
-            }
+        controllerFuture.addListener({
+            val c = controllerFuture.get()
+            controller = c
+            c.addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    _isPlaying.value = isPlaying
+                }
 
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                _current.value = _songs.value.getOrNull(player.currentMediaItemIndex)
-            }
-        })
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    updateCurrent()
+                }
+            })
+            syncWithController()
+        }, ContextCompat.getMainExecutor(app))
+    }
+
+    private fun Song.toMediaItem(): MediaItem =
+        MediaItem.Builder()
+            .setMediaId(id.toString())
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setArtist(artist)
+                    .build()
+            )
+            .build()
+
+    private fun updateCurrent() {
+        val id = controller?.currentMediaItem?.mediaId
+        _current.value = _songs.value.firstOrNull { it.id.toString() == id }
+    }
+
+    private fun syncWithController() {
+        val c = controller ?: return
+        val list = _songs.value
+        if (list.isEmpty()) return
+        if (c.mediaItemCount == 0) {
+            c.setMediaItems(list.map { it.toMediaItem() })
+            c.prepare()
+        }
+        _isPlaying.value = c.isPlaying
+        if (c.playWhenReady || c.currentPosition > 0) updateCurrent()
     }
 
     fun loadSongsFromDevice() {
         viewModelScope.launch {
             val list = withContext(Dispatchers.IO) { loadSongs(getApplication()) }
             _songs.value = list
-            player.setMediaItems(list.map { MediaItem.fromUri(it.uri) })
-            player.prepare()
+            syncWithController()
         }
     }
 
     fun play(song: Song) {
+        val c = controller ?: return
         val index = _songs.value.indexOf(song)
         if (index < 0) return
         _current.value = song
-        player.seekTo(index, 0)
-        player.play()
+        c.seekTo(index, 0)
+        c.play()
     }
 
     fun togglePlayPause() {
-        if (player.isPlaying) {
-            player.pause()
+        val c = controller ?: return
+        if (c.isPlaying) {
+            c.pause()
         } else {
             if (_current.value == null) {
                 _songs.value.firstOrNull()?.let { play(it) }
             } else {
-                player.play()
+                c.play()
             }
         }
     }
 
     fun toggleFavorite(song: Song) {
         viewModelScope.launch { favoritesStore.toggle(song.id) }
-    }
-
-    override fun onCleared() {
-        player.release()
-        super.onCleared()
     }
 }
