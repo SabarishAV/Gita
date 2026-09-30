@@ -12,20 +12,19 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.Icon
@@ -129,14 +128,14 @@ fun SeekBar(
         val x = w * fraction
         val stroke = 3.dp.toPx()
 
-        drawLine(Color(0xFF3A3A38), Offset(0f, midY), Offset(w, midY), stroke)
+        drawLine(Color(0xFF2E2E2B), Offset(0f, midY), Offset(w, midY), stroke)
         drawLine(Silver, Offset(0f, midY), Offset(x, midY), stroke)
 
         // metallic knob
         drawCircle(Color(0xFF050505), 13.dp.toPx(), Offset(x, midY))
         drawCircle(
             brush = Brush.radialGradient(
-                listOf(Color(0xFFF7F7F3), Color(0xFFB4B4B0), Color(0xFF6E6E6A)),
+                listOf(Color(0xFFC2C2BE), Color(0xFF9A9A96), Color(0xFF5A5A56)),
                 center = Offset(x - 3.dp.toPx(), midY - 3.dp.toPx()),
                 radius = 14.dp.toPx()
             ),
@@ -171,7 +170,19 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .systemBarsPadding()
-                .verticalScroll(rememberScrollState())
+                .pointerInput(Unit) {
+                    // swipe down to close
+                    var total = 0f
+                    detectVerticalDragGestures(
+                        onDragStart = { total = 0f },
+                        onDragEnd = { if (total > 120.dp.toPx()) onClose() },
+                        onDragCancel = { total = 0f },
+                        onVerticalDrag = { change, dy ->
+                            change.consume()
+                            total += dy
+                        }
+                    )
+                }
                 .padding(horizontal = 24.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -185,54 +196,56 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
                         .size(32.dp)
                         .clickable(onClick = onClose)
                 )
-                Text(
+                ChromeText(
                     text = "GITA",
-                    color = Silver,
-                    fontFamily = FontFamily.Serif,
-                    fontWeight = FontWeight.Bold,
                     fontSize = 30.sp,
+                    fontFamily = FontFamily.Serif,
                     letterSpacing = 6.sp,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
 
-            val artShape = RoundedCornerShape(4.dp)
-            Box(
-                contentAlignment = Alignment.Center,
+            BoxWithConstraints(
                 modifier = Modifier
-                    .padding(top = 24.dp)
-                    .fillMaxWidth(0.9f)
-                    .aspectRatio(1f)
-                    .clip(artShape)
-                    .background(Color(0xFF101010))
-                    .border(2.dp, MetalBrush, artShape)
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                contentAlignment = Alignment.Center
             ) {
-                val art = details?.art
-                if (art != null) {
-                    Image(
-                        bitmap = art.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    VinylFallback(playing = isPlaying)
+                val side = minOf(maxWidth * 0.92f, maxHeight)
+                val artShape = RoundedCornerShape(4.dp)
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(side)
+                        .clip(artShape)
+                        .background(Color(0xFF101010))
+                        .border(2.dp, MetalBrush, artShape)
+                ) {
+                    val art = details?.art
+                    if (art != null) {
+                        Image(
+                            bitmap = art.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        VinylFallback(playing = isPlaying)
+                    }
                 }
             }
 
-            Text(
+            ChromeText(
                 text = song.title,
-                color = Silver,
-                fontWeight = FontWeight.Bold,
                 fontSize = 26.sp,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 24.dp)
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = song.artist,
-                color = Silver.copy(alpha = 0.85f),
+                color = Silver,
                 fontSize = 18.sp,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
@@ -255,7 +268,7 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
                 positionMs = position,
                 durationMs = total,
                 onSeek = { vm.seekTo(it) },
-                modifier = Modifier.padding(top = 24.dp)
+                modifier = Modifier.padding(top = 20.dp)
             )
             Row(
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -268,7 +281,7 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(top = 24.dp, bottom = 16.dp)
+                modifier = Modifier.padding(top = 20.dp, bottom = 16.dp)
             ) {
                 MetalButton(Glyph.Prev, onClick = { vm.previous() })
                 MetalRoundButton(

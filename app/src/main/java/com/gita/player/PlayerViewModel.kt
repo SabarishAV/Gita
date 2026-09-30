@@ -2,6 +2,8 @@ package com.gita.player
 
 import android.app.Application
 import android.content.ComponentName
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -23,8 +25,10 @@ import kotlinx.coroutines.withContext
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val favoritesStore = FavoritesStore(app)
+    private val settingsStore = SettingsStore(app)
     private var controller: MediaController? = null
     private var progressJob: Job? = null
+    private var appliedKey: String? = null
 
     private val controllerFuture = MediaController.Builder(
         app,
@@ -48,6 +52,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     val favorites: StateFlow<Set<Long>> = favoritesStore.favoriteIds
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    // null until the saved settings have been read
+    val settings: StateFlow<AppSettings?> = settingsStore.settings
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         controllerFuture.addListener({
@@ -120,8 +128,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         refreshProgress()
     }
 
-    private fun syncWithController() {
+    private fun syncWithController(replace: Boolean = false) {
         val c = controller ?: return
+        if (replace) {
+            c.playWhenReady = false
+            c.stop()
+            c.clearMediaItems()
+            _current.value = null
+            _position.value = 0L
+            _duration.value = 0L
+        }
         val list = _songs.value
         if (list.isEmpty()) return
         if (c.mediaItemCount == 0) {
@@ -135,11 +151,36 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadSongsFromDevice() {
+        val s = settings.value ?: return
         viewModelScope.launch {
-            val list = withContext(Dispatchers.IO) { loadSongs(getApplication()) }
+            val folder = if (s.folderOnly) s.folderId else null
+            val list = withContext(Dispatchers.IO) {
+                val all = loadSongs(getApplication())
+                if (folder != null) {
+                    val ids = folderSongIds(getApplication(), folder)
+                    all.filter { it.id in ids }
+                } else {
+                    all
+                }
+            }
             _songs.value = list
-            syncWithController()
+
+            val key = folder ?: ""
+            val changed = appliedKey != null && appliedKey != key
+            appliedKey = key
+            syncWithController(replace = changed)
         }
+    }
+
+    fun setFolderOnly(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setFolderOnly(enabled) }
+    }
+
+    fun onFolderPicked(uri: Uri) {
+        val docId = DocumentsContract.getTreeDocumentId(uri)
+        val path = docId.substringAfter(':', "").trim('/')
+        val name = if (path.isEmpty()) "Storage root" else path.substringAfterLast('/')
+        viewModelScope.launch { settingsStore.setFolder(docId, name) }
     }
 
     fun play(song: Song) {

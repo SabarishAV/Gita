@@ -13,21 +13,29 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -83,8 +91,12 @@ fun GitaApp(vm: PlayerViewModel) {
         ActivityResultContracts.RequestPermission()
     ) { granted = it }
 
+    val settings by vm.settings.collectAsState()
+
     LaunchedEffect(Unit) { if (!granted) launcher.launch(permission) }
-    LaunchedEffect(granted) { if (granted) vm.loadSongsFromDevice() }
+    LaunchedEffect(granted, settings) {
+        if (granted && settings != null) vm.loadSongsFromDevice()
+    }
 
     val songs by vm.songs.collectAsState()
     val current by vm.current.collectAsState()
@@ -92,7 +104,9 @@ fun GitaApp(vm: PlayerViewModel) {
     val isPlaying by vm.isPlaying.collectAsState()
 
     var showPlayer by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
+    BackHandler(enabled = showSettings) { showSettings = false }
 
     GitaBackground {
         Column(
@@ -101,16 +115,24 @@ fun GitaApp(vm: PlayerViewModel) {
                 .systemBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 16.dp)
         ) {
-            Text(
-                text = "GITA",
-                color = Silver,
-                fontFamily = FontFamily.Serif,
-                fontWeight = FontWeight.Bold,
-                fontSize = 40.sp,
-                letterSpacing = 8.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Box(Modifier.fillMaxWidth()) {
+                ChromeText(
+                    text = "GITA",
+                    fontSize = 40.sp,
+                    fontFamily = FontFamily.Serif,
+                    letterSpacing = 8.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                Icon(
+                    Icons.Filled.Settings,
+                    contentDescription = "Settings",
+                    tint = SilverDim,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(30.dp)
+                        .clickable { showSettings = true }
+                )
+            }
             Text(
                 text = if (granted) "${songs.size} TRACKS" else "PERMISSION NEEDED TO READ MUSIC",
                 color = SilverDim,
@@ -134,14 +156,14 @@ fun GitaApp(vm: PlayerViewModel) {
                 }
             }
 
-            val barShape = RoundedCornerShape(8.dp)
+            val barShape = RoundedCornerShape(10.dp)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(barShape)
                     .background(Panel)
-                    .border(1.dp, SilverDark, barShape)
+                    .border(1.dp, EdgeBrush, barShape)
                     .clickable(enabled = current != null) { showPlayer = true }
                     .padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp)
             ) {
@@ -162,12 +184,42 @@ fun GitaApp(vm: PlayerViewModel) {
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                MetalRoundButton(
-                    glyph = if (isPlaying) Glyph.Pause else Glyph.Play,
-                    onClick = { vm.togglePlayPause() },
-                    diameter = 52.dp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    MetalButton(
+                        Glyph.Prev,
+                        onClick = { vm.previous() },
+                        width = 44.dp,
+                        height = 38.dp
+                    )
+                    MetalRoundButton(
+                        glyph = if (isPlaying) Glyph.Pause else Glyph.Play,
+                        onClick = { vm.togglePlayPause() },
+                        diameter = 50.dp
+                    )
+                    MetalButton(
+                        Glyph.Next,
+                        onClick = { vm.next() },
+                        width = 44.dp,
+                        height = 38.dp
+                    )
+                }
             }
+        }
+
+        AnimatedVisibility(
+            visible = showSettings,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it }
+        ) {
+            SettingsScreen(
+                settings = settings ?: AppSettings(),
+                onToggle = { vm.setFolderOnly(it) },
+                onFolderPicked = { vm.onFolderPicked(it) },
+                onClose = { showSettings = false }
+            )
         }
 
         AnimatedVisibility(
