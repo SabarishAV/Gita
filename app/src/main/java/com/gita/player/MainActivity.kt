@@ -78,6 +78,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+
 @Composable
 fun GitaApp(vm: PlayerViewModel) {
     val context = LocalContext.current
@@ -99,11 +101,13 @@ fun GitaApp(vm: PlayerViewModel) {
 
     val settings by vm.settings.collectAsState()
     val removedIds by vm.removedIds.collectAsState()
+    val prefs by vm.listPrefs.collectAsState()
     val removedReady = removedIds != null
+    val prefsReady = prefs != null
 
     LaunchedEffect(Unit) { if (!granted) launcher.launch(permission) }
-    LaunchedEffect(granted, settings, removedReady) {
-        if (granted && settings != null && removedReady) vm.loadSongsFromDevice()
+    LaunchedEffect(granted, settings, removedReady, prefsReady) {
+        if (granted && settings != null && removedReady && prefsReady) vm.loadSongsFromDevice()
     }
 
     val songs by vm.songs.collectAsState()
@@ -189,7 +193,7 @@ fun GitaApp(vm: PlayerViewModel) {
                             song = song,
                             isCurrent = song == current,
                             isFavorite = song.id in favorites,
-                            onPlay = { vm.play(song, shown) },
+                            onPlay = { vm.play(song, shown, if (favOnly) Source.FAV else Source.ALL) },
                             onToggleFavorite = { vm.toggleFavorite(song) },
                             onRemove = { vm.removeSong(song) }
                         )
@@ -257,9 +261,13 @@ fun GitaApp(vm: PlayerViewModel) {
         ) {
             SettingsScreen(
                 settings = settings ?: AppSettings(),
+                prefs = prefs ?: ListPrefs(),
                 removedCount = removedSongs.size,
                 onToggle = { vm.setFolderOnly(it) },
                 onFolderPicked = { vm.onFolderPicked(it) },
+                onSortBy = { vm.setSortBy(it) },
+                onAscending = { vm.setAscending(it) },
+                onShuffle = { vm.setShuffle(it) },
                 onOpenRemoved = { showRemoved = true },
                 onClose = { showSettings = false }
             )

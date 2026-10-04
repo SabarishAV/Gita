@@ -33,17 +33,22 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var loaded = false
     private var restored = false
     private var lastSongId: Long? = null
+    private var lastSource = Source.ALL
     private var allDevice: List<Song> = emptyList()
     private var folderList: List<Song> = emptyList()
+    private var dateAdded: Map<Long, Long> = emptyMap()
+    private var favSet: Set<Long> = emptySet()
 
-    // the songs currently loaded in the player (all songs, or just favorites)
+    // what is really loaded in the player (in play order) and which list it came from
     private var queue: List<Song> = emptyList()
+    private var queueSource = Source.ALL
 
     private val controllerFuture = MediaController.Builder(
         app,
         SessionToken(app, ComponentName(app, PlaybackService::class.java))
     ).buildAsync()
 
+    // the songs shown on screen, always in the chosen sort order
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
     val songs: StateFlow<List<Song>> = _songs
 
@@ -72,6 +77,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val removedIds: StateFlow<Set<Long>?> = settingsStore.removed
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    val listPrefs: StateFlow<ListPrefs?> = settingsStore.prefs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val shuffleOn: Boolean
+        get() = listPrefs.value?.shuffle == true
+
     init {
         controllerFuture.addListener({
             val c = controllerFuture.get()
@@ -84,7 +95,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                    if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED ||
+                        c.isPlaying || c.playWhenReady
+                    ) {
                         updateCurrent()
                     }
                     refreshProgress()
@@ -105,7 +118,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             syncWithController()
         }, ContextCompat.getMainExecutor(app))
 
-        // when a song is removed or restored, update the lists without reloading the device
+        // a song was removed or restored
         viewModelScope.launch {
             removedIds.collect {
                 if (loaded) {
@@ -115,12 +128,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        // remember the last played song
+        // sort or shuffle changed
+        viewModelScope.launch {
+            var prev: ListPrefs? = null
+            listPrefs.collect { p ->
+                val old = prev
+                prev = p
+                if (loaded && p != null) {
+                    updateVisibleLists()
+                    syncWithController(reshuffle = old != null && old.shuffle != p.shuffle)
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            favorites.collect { favSet = it }
+        }
+
+        // remember the last played song and the list it was played from
         viewModelScope.launch {
             _current.collect { song ->
                 if (song != null) {
                     lastSongId = song.id
-                    settingsStore.setLastSong(song.id)
+                    settingsStore.setLast(song.id, queueSource.name)
                 }
             }
         }
@@ -165,75 +195,166 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         refreshProgress()
     }
 
+    // ---------- sorting and lists ----------
+
+    private fun sortSongs(list: List<Song>, prefs: ListPrefs): List<Song> {
+        val byName = compareBy<Song, String>(String.CASE_INSENSITIVE_ORDER) { it.title }
+        val comparator: Comparator<Song> = when (prefs.sortBy) {
+            SortBy.NAME -> byName
+            SortBy.DATE -> compareBy<Song> { dateAdded[it.id] ?: 0L }.then(byName)
+        }
+        val sorted = list.sortedWith(comparator)
+        return if (prefs.ascending) sorted else sorted.reversed()
+    }
+
     private fun updateVisibleLists() {
         val removed = removedIds.value ?: emptySet()
-        _songs.value = folderList.filter { it.id !in removed }
+        val prefs = listPrefs.value ?: ListPrefs()
+        _songs.value = sortSongs(folderList.filter { it.id !in removed }, prefs)
         _removedSongs.value = allDevice.filter { it.id in removed }
     }
 
-    // the queue, minus songs that are no longer visible; falls back to all songs
-    private fun effectiveQueue(): List<Song> {
+    // the sorted songs of one list (all songs, or only favorites)
+    private fun baseList(source: Source): List<Song> =
+        if (source == Source.FAV) _songs.value.filter { it.id in favSet } else _songs.value
+
+    // play order: the sorted list, or (shuffle on) the start song first and the rest random
+    private fun buildOrder(base: List<Song>, startId: Long?): List<Song> {
+        if (!shuffleOn) return base
+        val start = base.firstOrNull { it.id == startId }
+        val rest = base.filter { it.id != startId }.shuffled()
+        return if (start != null) listOf(start) + rest else rest
+    }
+
+    private fun computeTarget(reshuffle: Boolean): List<Song> {
         val visible = _songs.value
+        val base = baseList(queueSource).ifEmpty { visible }
+        if (!shuffleOn) return base
         val ids = visible.map { it.id }.toSet()
-        val q = queue.filter { it.id in ids }
-        return if (q.isEmpty()) visible else q
+        val kept = queue.filter { it.id in ids }
+        if (reshuffle || kept.isEmpty()) {
+            val curId = controller?.currentMediaItem?.mediaId?.toLongOrNull()
+            return buildOrder(base, curId)
+        }
+        return kept
     }
 
-    // makes the player's queue match the target list, without interrupting playback
-    private fun reconcile(c: MediaController, list: List<Song>) {
-        val ids = list.map { it.id.toString() }.toSet()
-        for (i in c.mediaItemCount - 1 downTo 0) {
-            if (c.getMediaItemAt(i).mediaId !in ids) c.removeMediaItem(i)
+    private fun playlistMatches(c: MediaController, list: List<Song>): Boolean =
+        c.mediaItemCount == list.size &&
+                list.indices.all { c.getMediaItemAt(it).mediaId == list[it].id.toString() }
+
+    // makes the player's queue equal to the wanted list while the current song keeps playing
+    private fun applyQueue(c: MediaController, wanted: List<Song>) {
+        var target = wanted
+        val curId = if (c.mediaItemCount > 0) c.currentMediaItem?.mediaId else null
+
+        // keep the playing song even if it is not in the wanted list (e.g. un-favorited)
+        if (curId != null && target.none { it.id.toString() == curId }) {
+            val keep = _songs.value.firstOrNull { it.id.toString() == curId }
+            if (keep != null) target = listOf(keep) + target
         }
-        list.forEachIndexed { index, song ->
-            if (index >= c.mediaItemCount ||
-                c.getMediaItemAt(index).mediaId != song.id.toString()
-            ) {
-                c.addMediaItem(index, song.toMediaItem())
+
+        if (playlistMatches(c, target)) {
+            queue = target
+            return
+        }
+
+        if (c.mediaItemCount == 0 || curId == null) {
+            if (target.isNotEmpty()) {
+                c.setMediaItems(target.map { it.toMediaItem() })
+                c.prepare()
             }
+            queue = target
+            return
         }
+
+        val idx = target.indexOfFirst { it.id.toString() == curId }
+        if (idx < 0) {
+            // the playing song is gone: continue with the next one that is still available
+            val oldPos = queue.indexOfFirst { it.id.toString() == curId }
+            val next = if (oldPos >= 0) {
+                queue.drop(oldPos + 1).firstOrNull { s -> target.any { it.id == s.id } }
+            } else null
+            val start = next?.let { n -> target.indexOfFirst { it.id == n.id } } ?: 0
+            if (target.isNotEmpty()) {
+                c.setMediaItems(target.map { it.toMediaItem() }, start, 0L)
+                c.prepare()
+            } else {
+                c.clearMediaItems()
+            }
+            queue = target
+            return
+        }
+
+        // keep only the playing item, then put the rest around it in the wanted order
+        val curIndex = c.currentMediaItemIndex
+        if (curIndex < c.mediaItemCount - 1) c.removeMediaItems(curIndex + 1, c.mediaItemCount)
+        if (curIndex > 0) c.removeMediaItems(0, curIndex)
+        if (idx > 0) {
+            c.addMediaItems(0, target.subList(0, idx).map { it.toMediaItem() })
+        }
+        if (idx < target.size - 1) {
+            c.addMediaItems(
+                c.mediaItemCount,
+                target.subList(idx + 1, target.size).map { it.toMediaItem() }
+            )
+        }
+        queue = target
     }
 
-    private fun syncWithController(replace: Boolean = false) {
+    private fun syncWithController(replace: Boolean = false, reshuffle: Boolean = false) {
         val c = controller ?: return
         if (!loaded) return
+
         if (replace) {
             c.playWhenReady = false
             c.stop()
             c.clearMediaItems()
             queue = emptyList()
+            queueSource = Source.ALL
             _current.value = null
             _position.value = 0L
             _duration.value = 0L
         }
 
-        val target = effectiveQueue()
-        queue = target
-        if (c.mediaItemCount == 0) {
-            if (target.isNotEmpty()) {
-                c.setMediaItems(target.map { it.toMediaItem() })
-                c.prepare()
-            }
-        } else {
-            reconcile(c, target)
-            val cur = _current.value
-            if (cur != null && target.none { it.id == cur.id }) {
-                if (c.isPlaying) updateCurrent() else _current.value = null
-            }
-        }
-
-        // first time after opening the app: show the last played song, from the start
+        // first time after opening the app
         if (!restored) {
             restored = true
-            if (!c.isPlaying) {
-                val idx = target.indexOfFirst { it.id == lastSongId }
-                if (idx >= 0 && idx < c.mediaItemCount) {
-                    c.seekTo(idx, 0L)
-                    _current.value = target[idx]
+            if (c.isPlaying) {
+                // music is already playing: adopt that queue
+                val byId = _songs.value.associateBy { it.id.toString() }
+                queue = (0 until c.mediaItemCount).mapNotNull { byId[c.getMediaItemAt(it).mediaId] }
+                queueSource = lastSource
+            } else {
+                // show the last played song, from the start, in the list it was played from
+                val last = _songs.value.firstOrNull { it.id == lastSongId }
+                if (last != null) {
+                    var source = lastSource
+                    var base = baseList(source)
+                    if (base.none { it.id == last.id }) {
+                        source = Source.ALL
+                        base = baseList(Source.ALL)
+                    }
+                    queueSource = source
+                    val order = buildOrder(base, last.id)
+                    val idx = order.indexOfFirst { it.id == last.id }
+                    queue = order
+                    c.setMediaItems(order.map { it.toMediaItem() }, idx, 0L)
+                    c.prepare()
+                    _current.value = last
+                    _isPlaying.value = false
+                    refreshProgress()
+                    return
                 }
             }
         }
 
+        applyQueue(c, computeTarget(reshuffle))
+
+        val cur = _current.value
+        if (cur != null && queue.none { it.id == cur.id }) {
+            if (c.isPlaying) updateCurrent() else _current.value = null
+        }
         _isPlaying.value = c.isPlaying
         if (c.isPlaying) startProgress()
         if (c.playWhenReady || c.currentPosition > 0) updateCurrent()
@@ -242,18 +363,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadSongsFromDevice() {
         val s = settings.value ?: return
-        if (removedIds.value == null) return
+        if (removedIds.value == null || listPrefs.value == null) return
         viewModelScope.launch {
-            if (!restored) lastSongId = settingsStore.lastSongId.first()
+            if (!restored) {
+                lastSongId = settingsStore.lastSongId.first()
+                lastSource = settingsStore.lastSource.first()
+                    ?.let { name -> runCatching { Source.valueOf(name) }.getOrNull() }
+                    ?: Source.ALL
+            }
+            favSet = favoritesStore.favoriteIds.first()
 
             val folder = if (s.folderOnly) s.folderId else null
             val result = withContext(Dispatchers.IO) {
                 val all = loadSongs(getApplication())
                 val ids = folder?.let { folderSongIds(getApplication(), it) }
-                all to (if (ids != null) all.filter { it.id in ids } else all)
+                Triple(
+                    all,
+                    if (ids != null) all.filter { it.id in ids } else all,
+                    songDateAdded(getApplication())
+                )
             }
             allDevice = result.first
             folderList = result.second
+            dateAdded = result.third
             loaded = true
             updateVisibleLists()
 
@@ -263,6 +395,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             syncWithController(replace = changed)
         }
     }
+
+    // ---------- settings actions ----------
 
     fun setFolderOnly(enabled: Boolean) {
         viewModelScope.launch { settingsStore.setFolderOnly(enabled) }
@@ -275,6 +409,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setFolder(docId, name) }
     }
 
+    fun setSortBy(value: SortBy) {
+        viewModelScope.launch { settingsStore.setSortBy(value) }
+    }
+
+    fun setAscending(value: Boolean) {
+        viewModelScope.launch { settingsStore.setAscending(value) }
+    }
+
+    fun setShuffle(value: Boolean) {
+        viewModelScope.launch { settingsStore.setShuffle(value) }
+    }
+
     fun removeSong(song: Song) {
         viewModelScope.launch { settingsStore.removeSong(song.id) }
     }
@@ -283,20 +429,26 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.restoreSong(song.id) }
     }
 
-    // list = the songs shown on screen (all songs, or only favorites)
-    fun play(song: Song, list: List<Song> = _songs.value) {
+    // ---------- playback ----------
+
+    // list = the songs shown on screen, source = All or Favorites
+    fun play(song: Song, list: List<Song> = _songs.value, source: Source = Source.ALL) {
         val c = controller ?: return
-        val index = list.indexOfFirst { it.id == song.id }
-        if (index < 0) return
-        if (list.map { it.id } != queue.map { it.id }) {
-            queue = list
-            c.setMediaItems(list.map { it.toMediaItem() }, index, 0L)
+        if (list.none { it.id == song.id }) return
+
+        val order = buildOrder(list, song.id)
+        val index = order.indexOfFirst { it.id == song.id }
+        queueSource = source
+        queue = order
+        if (!playlistMatches(c, order)) {
+            c.setMediaItems(order.map { it.toMediaItem() }, index, 0L)
             c.prepare()
         } else {
             c.seekTo(index, 0L)
         }
         _current.value = song
         c.play()
+        viewModelScope.launch { settingsStore.setLast(song.id, source.name) }
     }
 
     fun togglePlayPause() {

@@ -8,8 +8,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,7 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
@@ -47,10 +51,21 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
+enum class SortBy { NAME, DATE }
+
+// which list a song was played from
+enum class Source { ALL, FAV }
+
 data class AppSettings(
     val folderOnly: Boolean = false,
     val folderId: String? = null,
     val folderName: String? = null
+)
+
+data class ListPrefs(
+    val sortBy: SortBy = SortBy.NAME,
+    val ascending: Boolean = true,
+    val shuffle: Boolean = false
 )
 
 private val Context.settingsDataStore by preferencesDataStore("settings")
@@ -60,22 +75,49 @@ class SettingsStore(private val context: Context) {
     private val idKey = stringPreferencesKey("folder_id")
     private val nameKey = stringPreferencesKey("folder_name")
     private val removedKey = stringSetPreferencesKey("removed_ids")
+    private val sortKey = stringPreferencesKey("sort_by")
+    private val ascKey = booleanPreferencesKey("sort_ascending")
+    private val shuffleKey = booleanPreferencesKey("shuffle")
+    private val lastSongKey = longPreferencesKey("last_song")
+    private val lastSourceKey = stringPreferencesKey("last_source")
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { p ->
         AppSettings(p[onlyKey] ?: false, p[idKey], p[nameKey])
     }
 
-    // IDs of songs the user removed from the list
     val removed: Flow<Set<Long>> = context.settingsDataStore.data.map { p ->
         (p[removedKey] ?: emptySet()).mapNotNull { it.toLongOrNull() }.toSet()
     }
 
-    private val lastSongKey = longPreferencesKey("last_song")
+    val prefs: Flow<ListPrefs> = context.settingsDataStore.data.map { p ->
+        ListPrefs(
+            sortBy = runCatching { SortBy.valueOf(p[sortKey] ?: "NAME") }
+                .getOrDefault(SortBy.NAME),
+            ascending = p[ascKey] ?: true,
+            shuffle = p[shuffleKey] ?: false
+        )
+    }
 
     val lastSongId: Flow<Long?> = context.settingsDataStore.data.map { it[lastSongKey] }
+    val lastSource: Flow<String?> = context.settingsDataStore.data.map { it[lastSourceKey] }
 
-    suspend fun setLastSong(id: Long) {
-        context.settingsDataStore.edit { it[lastSongKey] = id }
+    suspend fun setLast(id: Long, source: String) {
+        context.settingsDataStore.edit {
+            it[lastSongKey] = id
+            it[lastSourceKey] = source
+        }
+    }
+
+    suspend fun setSortBy(value: SortBy) {
+        context.settingsDataStore.edit { it[sortKey] = value.name }
+    }
+
+    suspend fun setAscending(value: Boolean) {
+        context.settingsDataStore.edit { it[ascKey] = value }
+    }
+
+    suspend fun setShuffle(value: Boolean) {
+        context.settingsDataStore.edit { it[shuffleKey] = value }
     }
 
     suspend fun setFolderOnly(enabled: Boolean) {
@@ -133,12 +175,47 @@ fun folderSongIds(context: Context, folderId: String): Set<Long> {
     return ids
 }
 
+// song id -> time the file was added to the device
+fun songDateAdded(context: Context): Map<Long, Long> {
+    val map = HashMap<Long, Long>()
+    context.contentResolver.query(
+        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+        arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DATE_ADDED),
+        null,
+        null,
+        null
+    )?.use { c ->
+        val idCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+        val dateCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+        while (c.moveToNext()) map[c.getLong(idCol)] = c.getLong(dateCol)
+    }
+    return map
+}
+
+@Composable
+private fun SettingsPanel(content: @Composable ColumnScope.() -> Unit) {
+    val shape = RoundedCornerShape(10.dp)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Panel)
+            .border(1.dp, EdgeBrush, shape)
+            .padding(18.dp),
+        content = content
+    )
+}
+
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    prefs: ListPrefs,
     removedCount: Int,
     onToggle: (Boolean) -> Unit,
     onFolderPicked: (Uri) -> Unit,
+    onSortBy: (SortBy) -> Unit,
+    onAscending: (Boolean) -> Unit,
+    onShuffle: (Boolean) -> Unit,
     onOpenRemoved: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -177,112 +254,206 @@ fun SettingsScreen(
 
             Column(
                 Modifier
-                    .padding(top = 28.dp)
-                    .fillMaxWidth()
-                    .clip(panelShape)
-                    .background(Panel)
-                    .border(1.dp, EdgeBrush, panelShape)
-                    .padding(18.dp)
+                    .padding(top = 24.dp)
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = "Only songs from a folder",
-                            color = Silver,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 16.sp
-                        )
-                        Text(
-                            text = "Show just the music in one folder",
-                            color = SilverDim,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
+                // ---- Folder ----
+                SettingsPanel {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "Only songs from a folder",
+                                color = Silver,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Show just the music in one folder",
+                                color = SilverDim,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                        MetalToggle(checked = on, onCheckedChange = onToggle)
                     }
-                    MetalToggle(checked = on, onCheckedChange = onToggle)
-                }
 
-                HorizontalDivider(
-                    color = Silver.copy(alpha = 0.15f),
-                    modifier = Modifier.padding(vertical = 16.dp)
-                )
+                    HorizontalDivider(
+                        color = Silver.copy(alpha = 0.15f),
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.alpha(if (on) 1f else 0.35f)
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = "FOLDER",
-                            color = SilverDim,
-                            fontSize = 11.sp,
-                            letterSpacing = 2.sp
-                        )
-                        Text(
-                            text = settings.folderName ?: "No folder selected",
-                            color = Silver,
-                            fontSize = 15.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
-                    }
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .padding(start = 12.dp)
-                            .size(width = 96.dp, height = 40.dp)
-                            .metal(RoundedCornerShape(8.dp))
-                            .clickable(enabled = on) { launcher.launch(null) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.alpha(if (on) 1f else 0.35f)
                     ) {
-                        Text(
-                            text = "BROWSE",
-                            color = Color(0xFF1A1A1A),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            letterSpacing = 2.sp
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "FOLDER",
+                                color = SilverDim,
+                                fontSize = 11.sp,
+                                letterSpacing = 2.sp
+                            )
+                            Text(
+                                text = settings.folderName ?: "No folder selected",
+                                color = Silver,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .padding(start = 12.dp)
+                                .size(width = 96.dp, height = 40.dp)
+                                .metal(RoundedCornerShape(8.dp))
+                                .clickable(enabled = on) { launcher.launch(null) }
+                        ) {
+                            Text(
+                                text = "BROWSE",
+                                color = Color(0xFF1A1A1A),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                letterSpacing = 2.sp
+                            )
+                        }
                     }
                 }
-            }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .padding(top = 16.dp)
-                    .fillMaxWidth()
-                    .clip(panelShape)
-                    .background(Panel)
-                    .border(1.dp, EdgeBrush, panelShape)
-                    .clickable(onClick = onOpenRemoved)
-                    .padding(18.dp)
-            ) {
-                Column(Modifier.weight(1f)) {
+                // ---- Sort ----
+                SettingsPanel {
                     Text(
-                        text = "Removed songs",
+                        text = "Sort songs",
                         color = Silver,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp
                     )
                     Text(
-                        text = "Songs you took out of your list",
+                        text = "Applies to All and Favorites",
                         color = SilverDim,
                         fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 2.dp)
+                        modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                    )
+
+                    Text(
+                        text = "SORT BY",
+                        color = SilverDim,
+                        fontSize = 11.sp,
+                        letterSpacing = 2.sp,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ModeChip(
+                            "NAME",
+                            selected = prefs.sortBy == SortBy.NAME,
+                            onClick = { onSortBy(SortBy.NAME) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModeChip(
+                            "DATE ADDED",
+                            selected = prefs.sortBy == SortBy.DATE,
+                            onClick = { onSortBy(SortBy.DATE) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Text(
+                        text = "ORDER",
+                        color = SilverDim,
+                        fontSize = 11.sp,
+                        letterSpacing = 2.sp,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ModeChip(
+                            "ASCENDING",
+                            selected = prefs.ascending,
+                            onClick = { onAscending(true) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModeChip(
+                            "DESCENDING",
+                            selected = !prefs.ascending,
+                            onClick = { onAscending(false) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Text(
+                        text = when {
+                            prefs.sortBy == SortBy.NAME && prefs.ascending -> "A to Z"
+                            prefs.sortBy == SortBy.NAME -> "Z to A"
+                            prefs.ascending -> "Oldest added first"
+                            else -> "Newest added first"
+                        },
+                        color = SilverDim,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 12.dp)
                     )
                 }
-                Text(
-                    text = "$removedCount",
-                    color = Silver,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-                Icon(
-                    Icons.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = SilverDim,
-                    modifier = Modifier.size(24.dp)
-                )
+
+                // ---- Shuffle ----
+                SettingsPanel {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "Shuffle",
+                                color = Silver,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Play in random order from the song you pick. The list order stays the same.",
+                                color = SilverDim,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp, end = 12.dp)
+                            )
+                        }
+                        MetalToggle(checked = prefs.shuffle, onCheckedChange = onShuffle)
+                    }
+                }
+
+                // ---- Removed songs ----
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(panelShape)
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, panelShape)
+                        .clickable(onClick = onOpenRemoved)
+                        .padding(18.dp)
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "Removed songs",
+                            color = Silver,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            text = "Songs you took out of your list",
+                            color = SilverDim,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    Text(
+                        text = "$removedCount",
+                        color = Silver,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    Icon(
+                        Icons.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = SilverDim,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
         }
     }
