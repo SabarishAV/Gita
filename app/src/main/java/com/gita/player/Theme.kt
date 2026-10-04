@@ -239,23 +239,34 @@ fun MetalToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     }
 }
 
+private fun heartPath(w: Float, h: Float): Path = Path().apply {
+    moveTo(w * 0.5f, h * 0.92f)
+    cubicTo(w * 0.18f, h * 0.66f, w * 0.04f, h * 0.48f, w * 0.04f, h * 0.30f)
+    cubicTo(w * 0.04f, h * 0.14f, w * 0.17f, h * 0.06f, w * 0.29f, h * 0.06f)
+    cubicTo(w * 0.40f, h * 0.06f, w * 0.47f, h * 0.12f, w * 0.50f, h * 0.20f)
+    cubicTo(w * 0.53f, h * 0.12f, w * 0.60f, h * 0.06f, w * 0.71f, h * 0.06f)
+    cubicTo(w * 0.83f, h * 0.06f, w * 0.96f, h * 0.14f, w * 0.96f, h * 0.30f)
+    cubicTo(w * 0.96f, h * 0.48f, w * 0.82f, h * 0.66f, w * 0.50f, h * 0.92f)
+    close()
+}
+
 @Composable
 fun HeartIcon(filled: Boolean, onClick: () -> Unit) {
-    Box(Modifier.clickable(onClick = onClick).padding(8.dp)) {
-        if (filled) {
-            Icon(
-                Icons.Filled.Favorite,
-                contentDescription = null,
-                tint = Silver,
-                modifier = Modifier.size(26.dp)
-            )
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(40.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Canvas(Modifier.size(22.dp)) {
+            val path = heartPath(size.width, size.height)
+            if (filled) {
+                drawPath(path, brush = MetalBrush)
+                drawPath(path, color = Color(0xFF2A2A28), style = Stroke(1.dp.toPx()))
+            } else {
+                drawPath(path, color = SilverDim, style = Stroke(1.6.dp.toPx()))
+            }
         }
-        Icon(
-            Icons.Filled.FavoriteBorder,
-            contentDescription = "Favorite",
-            tint = Silver,
-            modifier = Modifier.size(26.dp)
-        )
     }
 }
 

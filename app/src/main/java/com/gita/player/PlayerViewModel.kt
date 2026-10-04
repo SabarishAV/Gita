@@ -18,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -30,8 +31,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var progressJob: Job? = null
     private var appliedKey: String? = null
     private var loaded = false
+    private var restored = false
+    private var lastSongId: Long? = null
     private var allDevice: List<Song> = emptyList()
     private var folderList: List<Song> = emptyList()
+
+    // the songs currently loaded in the player (all songs, or just favorites)
+    private var queue: List<Song> = emptyList()
 
     private val controllerFuture = MediaController.Builder(
         app,
@@ -78,7 +84,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    updateCurrent()
+                    if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) {
+                        updateCurrent()
+                    }
                     refreshProgress()
                 }
 
@@ -103,6 +111,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (loaded) {
                     updateVisibleLists()
                     syncWithController()
+                }
+            }
+        }
+
+        // remember the last played song
+        viewModelScope.launch {
+            _current.collect { song ->
+                if (song != null) {
+                    lastSongId = song.id
+                    settingsStore.setLastSong(song.id)
                 }
             }
         }
@@ -153,7 +171,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         _removedSongs.value = allDevice.filter { it.id in removed }
     }
 
-    // makes the player's queue match the visible list, without interrupting playback
+    // the queue, minus songs that are no longer visible; falls back to all songs
+    private fun effectiveQueue(): List<Song> {
+        val visible = _songs.value
+        val ids = visible.map { it.id }.toSet()
+        val q = queue.filter { it.id in ids }
+        return if (q.isEmpty()) visible else q
+    }
+
+    // makes the player's queue match the target list, without interrupting playback
     private fun reconcile(c: MediaController, list: List<Song>) {
         val ids = list.map { it.id.toString() }.toSet()
         for (i in c.mediaItemCount - 1 downTo 0) {
@@ -175,23 +201,39 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             c.playWhenReady = false
             c.stop()
             c.clearMediaItems()
+            queue = emptyList()
             _current.value = null
             _position.value = 0L
             _duration.value = 0L
         }
-        val list = _songs.value
+
+        val target = effectiveQueue()
+        queue = target
         if (c.mediaItemCount == 0) {
-            if (list.isNotEmpty()) {
-                c.setMediaItems(list.map { it.toMediaItem() })
+            if (target.isNotEmpty()) {
+                c.setMediaItems(target.map { it.toMediaItem() })
                 c.prepare()
             }
         } else {
-            reconcile(c, list)
+            reconcile(c, target)
             val cur = _current.value
-            if (cur != null && list.none { it.id == cur.id }) {
+            if (cur != null && target.none { it.id == cur.id }) {
                 if (c.isPlaying) updateCurrent() else _current.value = null
             }
         }
+
+        // first time after opening the app: show the last played song, from the start
+        if (!restored) {
+            restored = true
+            if (!c.isPlaying) {
+                val idx = target.indexOfFirst { it.id == lastSongId }
+                if (idx >= 0 && idx < c.mediaItemCount) {
+                    c.seekTo(idx, 0L)
+                    _current.value = target[idx]
+                }
+            }
+        }
+
         _isPlaying.value = c.isPlaying
         if (c.isPlaying) startProgress()
         if (c.playWhenReady || c.currentPosition > 0) updateCurrent()
@@ -202,6 +244,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val s = settings.value ?: return
         if (removedIds.value == null) return
         viewModelScope.launch {
+            if (!restored) lastSongId = settingsStore.lastSongId.first()
+
             val folder = if (s.folderOnly) s.folderId else null
             val result = withContext(Dispatchers.IO) {
                 val all = loadSongs(getApplication())
@@ -239,12 +283,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.restoreSong(song.id) }
     }
 
-    fun play(song: Song) {
+    // list = the songs shown on screen (all songs, or only favorites)
+    fun play(song: Song, list: List<Song> = _songs.value) {
         val c = controller ?: return
-        val index = _songs.value.indexOf(song)
+        val index = list.indexOfFirst { it.id == song.id }
         if (index < 0) return
+        if (list.map { it.id } != queue.map { it.id }) {
+            queue = list
+            c.setMediaItems(list.map { it.toMediaItem() }, index, 0L)
+            c.prepare()
+        } else {
+            c.seekTo(index, 0L)
+        }
         _current.value = song
-        c.seekTo(index, 0)
         c.play()
     }
 

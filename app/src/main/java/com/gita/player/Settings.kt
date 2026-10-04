@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -67,6 +68,14 @@ class SettingsStore(private val context: Context) {
     // IDs of songs the user removed from the list
     val removed: Flow<Set<Long>> = context.settingsDataStore.data.map { p ->
         (p[removedKey] ?: emptySet()).mapNotNull { it.toLongOrNull() }.toSet()
+    }
+
+    private val lastSongKey = longPreferencesKey("last_song")
+
+    val lastSongId: Flow<Long?> = context.settingsDataStore.data.map { it[lastSongKey] }
+
+    suspend fun setLastSong(id: Long) {
+        context.settingsDataStore.edit { it[lastSongKey] = id }
     }
 
     suspend fun setFolderOnly(enabled: Boolean) {

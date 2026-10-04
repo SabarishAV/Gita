@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -46,10 +47,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -109,6 +112,9 @@ fun GitaApp(vm: PlayerViewModel) {
     val favorites by vm.favorites.collectAsState()
     val isPlaying by vm.isPlaying.collectAsState()
 
+    var favOnly by rememberSaveable { mutableStateOf(false) }
+    val shown = if (favOnly) songs.filter { it.id in favorites } else songs
+
     var showPlayer by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showRemoved by remember { mutableStateOf(false) }
@@ -142,26 +148,52 @@ fun GitaApp(vm: PlayerViewModel) {
                 )
             }
             Text(
-                text = if (granted) "${songs.size} TRACKS" else "PERMISSION NEEDED TO READ MUSIC",
+                text = if (granted) {
+                    "${shown.size} ${if (favOnly) "FAVORITES" else "TRACKS"}"
+                } else {
+                    "PERMISSION NEEDED TO READ MUSIC"
+                },
                 color = SilverDim,
                 fontSize = 12.sp,
                 letterSpacing = 3.sp,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp)
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 14.dp)
             )
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+                ModeChip("ALL", selected = !favOnly, onClick = { favOnly = false }, modifier = Modifier.weight(1f))
+                ModeChip("FAVORITES", selected = favOnly, onClick = { favOnly = true }, modifier = Modifier.weight(1f))
+            }
             HorizontalDivider(color = Silver.copy(alpha = 0.3f))
 
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                itemsIndexed(songs, key = { _, song -> song.id }) { index, song ->
-                    SongRow(
-                        index = index,
-                        song = song,
-                        isCurrent = song == current,
-                        isFavorite = song.id in favorites,
-                        onPlay = { vm.play(song) },
-                        onToggleFavorite = { vm.toggleFavorite(song) },
-                        onRemove = { vm.removeSong(song) }
+            if (favOnly && shown.isEmpty()) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                ) {
+                    Text(
+                        text = "NO FAVORITES YET",
+                        color = SilverDim,
+                        fontSize = 12.sp,
+                        letterSpacing = 3.sp
                     )
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    itemsIndexed(shown, key = { _, song -> song.id }) { index, song ->
+                        SongRow(
+                            index = index,
+                            song = song,
+                            isCurrent = song == current,
+                            isFavorite = song.id in favorites,
+                            onPlay = { vm.play(song, shown) },
+                            onToggleFavorite = { vm.toggleFavorite(song) },
+                            onRemove = { vm.removeSong(song) }
+                        )
+                    }
                 }
             }
 
@@ -256,6 +288,40 @@ fun GitaApp(vm: PlayerViewModel) {
 }
 
 @Composable
+fun ModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .height(36.dp)
+            .then(
+                if (selected) {
+                    Modifier.metal(shape)
+                } else {
+                    Modifier
+                        .clip(shape)
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, shape)
+                }
+            )
+            .clickable(onClick = onClick)
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Color(0xFF1A1A1A) else SilverDim,
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            letterSpacing = 2.sp
+        )
+    }
+}
+
+@Composable
 fun SongRow(
     index: Int,
     song: Song,
@@ -320,6 +386,21 @@ fun SongRow(
                         .background(Panel)
                         .border(1.dp, EdgeBrush, RoundedCornerShape(8.dp))
                 ) {
+                    if (isFavorite) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Remove from favorites",
+                                    color = Silver,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            onClick = {
+                                menuOpen = false
+                                onToggleFavorite()
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = {
                             Text(
