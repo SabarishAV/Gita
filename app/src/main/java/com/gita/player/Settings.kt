@@ -16,9 +16,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -31,12 +34,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -53,9 +58,15 @@ class SettingsStore(private val context: Context) {
     private val onlyKey = booleanPreferencesKey("folder_only")
     private val idKey = stringPreferencesKey("folder_id")
     private val nameKey = stringPreferencesKey("folder_name")
+    private val removedKey = stringSetPreferencesKey("removed_ids")
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { p ->
         AppSettings(p[onlyKey] ?: false, p[idKey], p[nameKey])
+    }
+
+    // IDs of songs the user removed from the list
+    val removed: Flow<Set<Long>> = context.settingsDataStore.data.map { p ->
+        (p[removedKey] ?: emptySet()).mapNotNull { it.toLongOrNull() }.toSet()
     }
 
     suspend fun setFolderOnly(enabled: Boolean) {
@@ -72,6 +83,18 @@ class SettingsStore(private val context: Context) {
         context.settingsDataStore.edit { p ->
             p[idKey] = id
             p[nameKey] = name
+        }
+    }
+
+    suspend fun removeSong(id: Long) {
+        context.settingsDataStore.edit { p ->
+            p[removedKey] = (p[removedKey] ?: emptySet()) + id.toString()
+        }
+    }
+
+    suspend fun restoreSong(id: Long) {
+        context.settingsDataStore.edit { p ->
+            p[removedKey] = (p[removedKey] ?: emptySet()) - id.toString()
         }
     }
 }
@@ -104,8 +127,10 @@ fun folderSongIds(context: Context, folderId: String): Set<Long> {
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    removedCount: Int,
     onToggle: (Boolean) -> Unit,
     onFolderPicked: (Uri) -> Unit,
+    onOpenRemoved: () -> Unit,
     onClose: () -> Unit
 ) {
     val launcher = rememberLauncherForActivityResult(
@@ -208,6 +233,145 @@ fun SettingsScreen(
                             fontSize = 13.sp,
                             letterSpacing = 2.sp
                         )
+                    }
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(top = 16.dp)
+                    .fillMaxWidth()
+                    .clip(panelShape)
+                    .background(Panel)
+                    .border(1.dp, EdgeBrush, panelShape)
+                    .clickable(onClick = onOpenRemoved)
+                    .padding(18.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Removed songs",
+                        color = Silver,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp
+                    )
+                    Text(
+                        text = "Songs you took out of your list",
+                        color = SilverDim,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                Text(
+                    text = "$removedCount",
+                    color = Silver,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+                Icon(
+                    Icons.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = SilverDim,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun RemovedSongsScreen(
+    songs: List<Song>,
+    onRestore: (Song) -> Unit,
+    onClose: () -> Unit
+) {
+    GitaBackground(Modifier.pointerInput(Unit) {}) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                Icon(
+                    Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "Back",
+                    tint = SilverDim,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(36.dp)
+                        .clickable(onClick = onClose)
+                )
+                ChromeText(
+                    text = "REMOVED",
+                    fontSize = 26.sp,
+                    fontFamily = FontFamily.Serif,
+                    letterSpacing = 5.sp,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            Text(
+                text = if (songs.size == 1) "1 SONG" else "${songs.size} SONGS",
+                color = SilverDim,
+                fontSize = 12.sp,
+                letterSpacing = 3.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp)
+            )
+            HorizontalDivider(color = Silver.copy(alpha = 0.3f))
+
+            if (songs.isEmpty()) {
+                Text(
+                    text = "NOTHING REMOVED",
+                    color = SilverDim,
+                    fontSize = 12.sp,
+                    letterSpacing = 3.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 40.dp)
+                )
+            } else {
+                LazyColumn {
+                    items(songs, key = { it.id }) { song ->
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = song.title,
+                                        color = Silver,
+                                        fontSize = 17.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = song.artist,
+                                        color = SilverDim,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .padding(start = 12.dp)
+                                        .size(width = 88.dp, height = 34.dp)
+                                        .metal(RoundedCornerShape(8.dp))
+                                        .clickable { onRestore(song) }
+                                ) {
+                                    Text(
+                                        text = "RESTORE",
+                                        color = Color(0xFF1A1A1A),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        letterSpacing = 1.sp
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = Silver.copy(alpha = 0.15f))
+                        }
                     }
                 }
             }

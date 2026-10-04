@@ -29,6 +29,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var controller: MediaController? = null
     private var progressJob: Job? = null
     private var appliedKey: String? = null
+    private var loaded = false
+    private var allDevice: List<Song> = emptyList()
+    private var folderList: List<Song> = emptyList()
 
     private val controllerFuture = MediaController.Builder(
         app,
@@ -37,6 +40,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
     val songs: StateFlow<List<Song>> = _songs
+
+    private val _removedSongs = MutableStateFlow<List<Song>>(emptyList())
+    val removedSongs: StateFlow<List<Song>> = _removedSongs
 
     private val _current = MutableStateFlow<Song?>(null)
     val current: StateFlow<Song?> = _current
@@ -53,8 +59,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val favorites: StateFlow<Set<Long>> = favoritesStore.favoriteIds
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
-    // null until the saved settings have been read
+    // null until the saved values have been read
     val settings: StateFlow<AppSettings?> = settingsStore.settings
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val removedIds: StateFlow<Set<Long>?> = settingsStore.removed
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
@@ -87,6 +96,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             })
             syncWithController()
         }, ContextCompat.getMainExecutor(app))
+
+        // when a song is removed or restored, update the lists without reloading the device
+        viewModelScope.launch {
+            removedIds.collect {
+                if (loaded) {
+                    updateVisibleLists()
+                    syncWithController()
+                }
+            }
+        }
     }
 
     private fun Song.toMediaItem(): MediaItem =
@@ -128,8 +147,30 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         refreshProgress()
     }
 
+    private fun updateVisibleLists() {
+        val removed = removedIds.value ?: emptySet()
+        _songs.value = folderList.filter { it.id !in removed }
+        _removedSongs.value = allDevice.filter { it.id in removed }
+    }
+
+    // makes the player's queue match the visible list, without interrupting playback
+    private fun reconcile(c: MediaController, list: List<Song>) {
+        val ids = list.map { it.id.toString() }.toSet()
+        for (i in c.mediaItemCount - 1 downTo 0) {
+            if (c.getMediaItemAt(i).mediaId !in ids) c.removeMediaItem(i)
+        }
+        list.forEachIndexed { index, song ->
+            if (index >= c.mediaItemCount ||
+                c.getMediaItemAt(index).mediaId != song.id.toString()
+            ) {
+                c.addMediaItem(index, song.toMediaItem())
+            }
+        }
+    }
+
     private fun syncWithController(replace: Boolean = false) {
         val c = controller ?: return
+        if (!loaded) return
         if (replace) {
             c.playWhenReady = false
             c.stop()
@@ -139,10 +180,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             _duration.value = 0L
         }
         val list = _songs.value
-        if (list.isEmpty()) return
         if (c.mediaItemCount == 0) {
-            c.setMediaItems(list.map { it.toMediaItem() })
-            c.prepare()
+            if (list.isNotEmpty()) {
+                c.setMediaItems(list.map { it.toMediaItem() })
+                c.prepare()
+            }
+        } else {
+            reconcile(c, list)
+            val cur = _current.value
+            if (cur != null && list.none { it.id == cur.id }) {
+                if (c.isPlaying) updateCurrent() else _current.value = null
+            }
         }
         _isPlaying.value = c.isPlaying
         if (c.isPlaying) startProgress()
@@ -152,18 +200,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadSongsFromDevice() {
         val s = settings.value ?: return
+        if (removedIds.value == null) return
         viewModelScope.launch {
             val folder = if (s.folderOnly) s.folderId else null
-            val list = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 val all = loadSongs(getApplication())
-                if (folder != null) {
-                    val ids = folderSongIds(getApplication(), folder)
-                    all.filter { it.id in ids }
-                } else {
-                    all
-                }
+                val ids = folder?.let { folderSongIds(getApplication(), it) }
+                all to (if (ids != null) all.filter { it.id in ids } else all)
             }
-            _songs.value = list
+            allDevice = result.first
+            folderList = result.second
+            loaded = true
+            updateVisibleLists()
 
             val key = folder ?: ""
             val changed = appliedKey != null && appliedKey != key
@@ -181,6 +229,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val path = docId.substringAfter(':', "").trim('/')
         val name = if (path.isEmpty()) "Storage root" else path.substringAfterLast('/')
         viewModelScope.launch { settingsStore.setFolder(docId, name) }
+    }
+
+    fun removeSong(song: Song) {
+        viewModelScope.launch { settingsStore.removeSong(song.id) }
+    }
+
+    fun restoreSong(song: Song) {
+        viewModelScope.launch { settingsStore.restoreSong(song.id) }
     }
 
     fun play(song: Song) {

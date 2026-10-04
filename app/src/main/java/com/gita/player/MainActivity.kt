@@ -33,7 +33,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -92,21 +95,26 @@ fun GitaApp(vm: PlayerViewModel) {
     ) { granted = it }
 
     val settings by vm.settings.collectAsState()
+    val removedIds by vm.removedIds.collectAsState()
+    val removedReady = removedIds != null
 
     LaunchedEffect(Unit) { if (!granted) launcher.launch(permission) }
-    LaunchedEffect(granted, settings) {
-        if (granted && settings != null) vm.loadSongsFromDevice()
+    LaunchedEffect(granted, settings, removedReady) {
+        if (granted && settings != null && removedReady) vm.loadSongsFromDevice()
     }
 
     val songs by vm.songs.collectAsState()
+    val removedSongs by vm.removedSongs.collectAsState()
     val current by vm.current.collectAsState()
     val favorites by vm.favorites.collectAsState()
     val isPlaying by vm.isPlaying.collectAsState()
 
     var showPlayer by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showRemoved by remember { mutableStateOf(false) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
     BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showRemoved) { showRemoved = false }
 
     GitaBackground {
         Column(
@@ -151,7 +159,8 @@ fun GitaApp(vm: PlayerViewModel) {
                         isCurrent = song == current,
                         isFavorite = song.id in favorites,
                         onPlay = { vm.play(song) },
-                        onToggleFavorite = { vm.toggleFavorite(song) }
+                        onToggleFavorite = { vm.toggleFavorite(song) },
+                        onRemove = { vm.removeSong(song) }
                     )
                 }
             }
@@ -216,9 +225,23 @@ fun GitaApp(vm: PlayerViewModel) {
         ) {
             SettingsScreen(
                 settings = settings ?: AppSettings(),
+                removedCount = removedSongs.size,
                 onToggle = { vm.setFolderOnly(it) },
                 onFolderPicked = { vm.onFolderPicked(it) },
+                onOpenRemoved = { showRemoved = true },
                 onClose = { showSettings = false }
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showRemoved,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it }
+        ) {
+            RemovedSongsScreen(
+                songs = removedSongs,
+                onRestore = { vm.restoreSong(it) },
+                onClose = { showRemoved = false }
             )
         }
 
@@ -239,8 +262,11 @@ fun SongRow(
     isCurrent: Boolean,
     isFavorite: Boolean,
     onPlay: () -> Unit,
-    onToggleFavorite: () -> Unit
+    onToggleFavorite: () -> Unit,
+    onRemove: () -> Unit
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
+
     Column {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -273,6 +299,42 @@ fun SongRow(
                 )
             }
             HeartIcon(filled = isFavorite, onClick = onToggleFavorite)
+            Box {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clickable { menuOpen = true }
+                ) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "More",
+                        tint = SilverDim,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                    modifier = Modifier
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, RoundedCornerShape(8.dp))
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Remove from list",
+                                color = Silver,
+                                fontSize = 14.sp
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onRemove()
+                        }
+                    )
+                }
+            }
         }
         HorizontalDivider(color = Silver.copy(alpha = 0.15f))
     }
