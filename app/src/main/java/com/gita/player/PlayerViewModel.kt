@@ -41,7 +41,20 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     // what is really loaded in the player (in play order) and which list it came from
     private var queue: List<Song> = emptyList()
-    private var queueSource = Source.ALL
+
+    private val _playSource = MutableStateFlow(Source.ALL)
+    val playSource: StateFlow<Source> = _playSource
+
+    // which list the player's queue came from
+    private var queueSource: Source
+        get() = _playSource.value
+        set(value) {
+            _playSource.value = value
+        }
+
+    // true once the app has worked out what to show after opening
+    private val _restoreDone = MutableStateFlow(false)
+    val restoreDone: StateFlow<Boolean> = _restoreDone
 
     private val controllerFuture = MediaController.Builder(
         app,
@@ -344,11 +357,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     _current.value = last
                     _isPlaying.value = false
                     refreshProgress()
+                    _restoreDone.value = true
                     return
                 }
             }
         }
 
+        _restoreDone.value = true
         applyQueue(c, computeTarget(reshuffle))
 
         val cur = _current.value

@@ -61,6 +61,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: PlayerViewModel by viewModels()
@@ -126,6 +129,60 @@ fun GitaApp(vm: PlayerViewModel) {
     BackHandler(enabled = showSettings) { showSettings = false }
     BackHandler(enabled = showRemoved) { showRemoved = false }
 
+    val playSource by vm.playSource.collectAsState()
+    val restoreDone by vm.restoreDone.collectAsState()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var viewInitialized by rememberSaveable { mutableStateOf(false) }
+    var pendingScrollId by remember { mutableStateOf<Long?>(null) }
+
+    // after reopening, show the list the last song was played from
+    LaunchedEffect(restoreDone) {
+        if (restoreDone && !viewInitialized) {
+            favOnly = playSource == Source.FAV
+            viewInitialized = true
+        }
+    }
+
+    // after switching lists from the bottom bar, jump to the playing song
+    LaunchedEffect(pendingScrollId, favOnly) {
+        val id = pendingScrollId
+        if (id != null) {
+            val index = shown.indexOfFirst { it.id == id }
+            if (index >= 0) listState.scrollToItem((index - 2).coerceAtLeast(0))
+            pendingScrollId = null
+        }
+    }
+
+    val onBarClick: () -> Unit = click@{
+        val cur = current ?: return@click
+        val wantFav = playSource == Source.FAV
+        val target = if (wantFav) songs.filter { it.id in favorites } else songs
+
+        // the song is not in the list it was played from any more: open the details page
+        if (target.none { it.id == cur.id }) {
+            showPlayer = true
+            return@click
+        }
+        // looking at the other list: switch to the playing list and jump to the song
+        if (favOnly != wantFav) {
+            favOnly = wantFav
+            pendingScrollId = cur.id
+            return@click
+        }
+        val index = shown.indexOfFirst { it.id == cur.id }
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == index }
+        val onScreen = item != null &&
+                item.offset >= info.viewportStartOffset &&
+                item.offset + item.size <= info.viewportEndOffset
+        if (onScreen) {
+            showPlayer = true
+        } else {
+            scope.launch { listState.animateScrollToItem((index - 2).coerceAtLeast(0)) }
+        }
+    }
+
     GitaBackground {
         Column(
             modifier = Modifier
@@ -186,7 +243,7 @@ fun GitaApp(vm: PlayerViewModel) {
                     )
                 }
             } else {
-                LazyColumn(modifier = Modifier.weight(1f)) {
+                LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
                     itemsIndexed(shown, key = { _, song -> song.id }) { index, song ->
                         SongRow(
                             index = index,
@@ -209,7 +266,7 @@ fun GitaApp(vm: PlayerViewModel) {
                     .clip(barShape)
                     .background(Panel)
                     .border(1.dp, EdgeBrush, barShape)
-                    .clickable(enabled = current != null) { showPlayer = true }
+                    .clickable(enabled = current != null, onClick = onBarClick)
                     .padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
