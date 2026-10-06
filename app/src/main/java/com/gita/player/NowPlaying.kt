@@ -5,6 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,6 +29,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -81,6 +87,18 @@ fun loadSongDetails(context: Context, uri: Uri): SongDetails {
         r.release()
     }
 }
+
+// press and hold to show the full text, release to hide it
+private fun Modifier.holdToReveal(text: String, onHold: (String?) -> Unit): Modifier =
+    pointerInput(text) {
+        detectTapGestures(
+            onPress = {
+                tryAwaitRelease()
+                onHold(null)
+            },
+            onLongPress = { onHold(text) }
+        )
+    }
 
 @Composable
 fun SeekBar(
@@ -146,11 +164,16 @@ fun SeekBar(
 }
 
 @Composable
-fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
+fun NowPlayingScreen(
+    vm: PlayerViewModel,
+    onClose: () -> Unit,
+    onSkip: () -> Unit = {}
+) {
     val current by vm.current.collectAsState()
     val isPlaying by vm.isPlaying.collectAsState()
     val position by vm.position.collectAsState()
     val duration by vm.duration.collectAsState()
+    val loop by vm.loop.collectAsState()
     val context = LocalContext.current
 
     val song = current ?: return
@@ -164,6 +187,17 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
         details?.album?.takeIf { it.isNotBlank() },
         details?.year?.takeIf { it.isNotBlank() }?.let { "($it)" }
     ).joinToString(" ")
+
+    var holding by remember { mutableStateOf(false) }
+    var heldText by remember { mutableStateOf("") }
+    val onHold: (String?) -> Unit = { text ->
+        if (text != null) {
+            heldText = text
+            holding = true
+        } else {
+            holding = false
+        }
+    }
 
     GitaBackground(Modifier.pointerInput(Unit) {}) {
         Column(
@@ -241,7 +275,8 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
                 fontSize = 26.sp,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.holdToReveal(song.title, onHold)
             )
             Text(
                 text = song.artist,
@@ -250,7 +285,9 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp)
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .holdToReveal(song.artist, onHold)
             )
             if (albumLine.isNotEmpty()) {
                 Text(
@@ -281,14 +318,56 @@ fun NowPlayingScreen(vm: PlayerViewModel, onClose: () -> Unit) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(top = 20.dp, bottom = 16.dp)
+                modifier = Modifier.padding(top = 20.dp)
             ) {
-                MetalButton(Glyph.Prev, onClick = { vm.previous() })
+                MetalButton(Glyph.Prev, onClick = {
+                    onSkip()
+                    vm.previous()
+                })
                 MetalRoundButton(
                     glyph = if (isPlaying) Glyph.Pause else Glyph.Play,
                     onClick = { vm.togglePlayPause() }
                 )
-                MetalButton(Glyph.Next, onClick = { vm.next() })
+                MetalButton(Glyph.Next, onClick = {
+                    onSkip()
+                    vm.next()
+                })
+            }
+
+            ModeChip(
+                label = "LOOP",
+                selected = loop,
+                onClick = { vm.toggleLoop() },
+                modifier = Modifier.padding(top = 16.dp, bottom = 12.dp).width(120.dp)
+            )
+        }
+
+        // full name, shown while the title or artist is held down
+        AnimatedVisibility(
+            visible = holding,
+            enter = fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.92f),
+            exit = fadeOut(tween(150))
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize().padding(32.dp)
+            ) {
+                val shape = RoundedCornerShape(10.dp)
+                Box(
+                    Modifier
+                        .clip(shape)
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, shape)
+                        .padding(22.dp)
+                ) {
+                    Text(
+                        text = heldText,
+                        color = Silver,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 22.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }

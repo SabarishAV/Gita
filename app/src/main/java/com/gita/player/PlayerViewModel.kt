@@ -52,14 +52,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             _playSource.value = value
         }
 
-    // true once the app has worked out what to show after opening
-    private val _restoreDone = MutableStateFlow(false)
-    val restoreDone: StateFlow<Boolean> = _restoreDone
+    // loop = repeat the current song (turns off on next/previous or when another song is picked)
+    private val _loop = MutableStateFlow(false)
+    val loop: StateFlow<Boolean> = _loop
 
     private val controllerFuture = MediaController.Builder(
         app,
         SessionToken(app, ComponentName(app, PlaybackService::class.java))
     ).buildAsync()
+
+    // true once the app has worked out what to show after opening
+    private val _restoreDone = MutableStateFlow(false)
+    val restoreDone: StateFlow<Boolean> = _restoreDone
 
     // the songs shown on screen, always in the chosen sort order
     private val _songs = MutableStateFlow<List<Song>>(emptyList())
@@ -100,7 +104,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         controllerFuture.addListener({
             val c = controllerFuture.get()
             controller = c
-            c.repeatMode = Player.REPEAT_MODE_ALL
+            if (c.repeatMode != Player.REPEAT_MODE_ONE) c.repeatMode = Player.REPEAT_MODE_ALL
+            _loop.value = c.repeatMode == Player.REPEAT_MODE_ONE
             c.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     _isPlaying.value = isPlaying
@@ -114,6 +119,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                         updateCurrent()
                     }
                     refreshProgress()
+                }
+
+                override fun onRepeatModeChanged(repeatMode: Int) {
+                    _loop.value = repeatMode == Player.REPEAT_MODE_ONE
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -449,7 +458,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     // list = the songs shown on screen, source = All or Favorites
     fun play(song: Song, list: List<Song> = _songs.value, source: Source = Source.ALL) {
         val c = controller ?: return
+
         if (list.none { it.id == song.id }) return
+        if (c.repeatMode == Player.REPEAT_MODE_ONE) c.repeatMode = Player.REPEAT_MODE_ALL
 
         val order = buildOrder(list, song.id)
         val index = order.indexOfFirst { it.id == song.id }
@@ -486,6 +497,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun next() {
         controller?.let {
+            if (it.repeatMode == Player.REPEAT_MODE_ONE) it.repeatMode = Player.REPEAT_MODE_ALL
             it.seekToNext()
             it.play()
         }
@@ -493,9 +505,17 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun previous() {
         controller?.let {
+            if (it.repeatMode == Player.REPEAT_MODE_ONE) it.repeatMode = Player.REPEAT_MODE_ALL
             it.seekToPrevious()
             it.play()
         }
+    }
+
+    fun toggleLoop() {
+        val c = controller ?: return
+        c.repeatMode =
+            if (c.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ALL
+            else Player.REPEAT_MODE_ONE
     }
 
     fun toggleFavorite(song: Song) {

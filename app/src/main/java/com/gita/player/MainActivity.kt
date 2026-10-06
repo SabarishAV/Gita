@@ -13,13 +13,18 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +36,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
@@ -47,12 +54,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,8 +77,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -81,7 +96,40 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// A slow, eased glide to a song (long distances jump close first, then glide the rest)
+private suspend fun LazyListState.glideTo(index: Int) {
+    val info = layoutInfo
+    val visible = info.visibleItemsInfo
+    if (visible.isEmpty()) {
+        scrollToItem(index)
+        return
+    }
+    val rowH = visible.first().size.toFloat()
+    val wanted = info.viewportSize.height / 3f
+    val first = visible.first()
+    val last = visible.last()
+    val near = 5
 
+    val targetOffset: Float = when {
+        index in first.index..last.index ->
+            visible.first { it.index == index }.offset.toFloat()
+        index < first.index ->
+            if (first.index - index > near) {
+                scrollToItem(index + near)
+                -near * rowH
+            } else {
+                first.offset - (first.index - index) * rowH
+            }
+        else ->
+            if (index - last.index > near) {
+                scrollToItem(index - near)
+                near * rowH
+            } else {
+                last.offset + (index - last.index) * rowH
+            }
+    }
+    animateScrollBy(targetOffset - wanted, tween<Float>(550, easing = FastOutSlowInEasing))
+}
 
 @Composable
 fun GitaApp(vm: PlayerViewModel) {
@@ -135,6 +183,26 @@ fun GitaApp(vm: PlayerViewModel) {
     val scope = rememberCoroutineScope()
     var viewInitialized by rememberSaveable { mutableStateOf(false) }
     var pendingScrollId by remember { mutableStateOf<Long?>(null) }
+    var flashId by remember { mutableStateOf<Long?>(null) }
+    var followArmed by remember { mutableStateOf(false) }
+    var followFrom by remember { mutableStateOf<Long?>(null) }
+
+    fun isOnScreen(index: Int): Boolean {
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == index }
+        return item != null &&
+                item.offset >= info.viewportStartOffset &&
+                item.offset + item.size <= info.viewportEndOffset
+    }
+
+    // brings a song into view with a glide and a silver glint on its row
+    suspend fun revealSong(id: Long, flashAlways: Boolean) {
+        val index = shown.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val onScreen = isOnScreen(index)
+        if (!onScreen) listState.glideTo(index)
+        if (!onScreen || flashAlways) flashId = id
+    }
 
     // after reopening, show the list the last song was played from
     LaunchedEffect(restoreDone) {
@@ -144,13 +212,33 @@ fun GitaApp(vm: PlayerViewModel) {
         }
     }
 
-    // after switching lists from the bottom bar, jump to the playing song
+    // after switching lists from the bottom bar, glide to the playing song
     LaunchedEffect(pendingScrollId, favOnly) {
         val id = pendingScrollId
         if (id != null) {
-            val index = shown.indexOfFirst { it.id == id }
-            if (index >= 0) listState.scrollToItem((index - 2).coerceAtLeast(0))
+            withFrameNanos { }
+            withFrameNanos { }
+            revealSong(id, flashAlways = true)
             pendingScrollId = null
+        }
+    }
+
+    // after next/previous, follow the new song in the list
+    val onSkip: () -> Unit = {
+        followFrom = current?.id
+        followArmed = true
+    }
+    LaunchedEffect(current?.id, followArmed) {
+        val cur = current
+        if (followArmed && cur != null && cur.id != followFrom) {
+            revealSong(cur.id, flashAlways = false)
+            followArmed = false
+        }
+    }
+    LaunchedEffect(followArmed) {
+        if (followArmed) {
+            delay(2000)
+            followArmed = false
         }
     }
 
@@ -164,23 +252,27 @@ fun GitaApp(vm: PlayerViewModel) {
             showPlayer = true
             return@click
         }
-        // looking at the other list: switch to the playing list and jump to the song
+        // looking at the other list: switch to the playing list and glide to the song
         if (favOnly != wantFav) {
             favOnly = wantFav
             pendingScrollId = cur.id
             return@click
         }
         val index = shown.indexOfFirst { it.id == cur.id }
-        val info = listState.layoutInfo
-        val item = info.visibleItemsInfo.firstOrNull { it.index == index }
-        val onScreen = item != null &&
-                item.offset >= info.viewportStartOffset &&
-                item.offset + item.size <= info.viewportEndOffset
-        if (onScreen) {
+        if (isOnScreen(index)) {
             showPlayer = true
         } else {
-            scope.launch { listState.animateScrollToItem((index - 2).coerceAtLeast(0)) }
+            scope.launch { revealSong(cur.id, flashAlways = true) }
         }
+    }
+
+    // random song from the list that is open right now
+    val onRandom: () -> Unit = random@{
+        if (shown.isEmpty()) return@random
+        val pool = if (shown.size > 1) shown.filter { it.id != current?.id } else shown
+        val pick = pool.random()
+        vm.play(pick, shown, if (favOnly) Source.FAV else Source.ALL)
+        scope.launch { revealSong(pick.id, flashAlways = true) }
     }
 
     GitaBackground {
@@ -223,10 +315,30 @@ fun GitaApp(vm: PlayerViewModel) {
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
             ) {
-                ModeChip("ALL", selected = !favOnly, onClick = { favOnly = false }, modifier = Modifier.weight(1f))
-                ModeChip("FAVORITES", selected = favOnly, onClick = { favOnly = true }, modifier = Modifier.weight(1f))
+                ModeChip(
+                    "ALL",
+                    selected = !favOnly,
+                    onClick = { favOnly = false },
+                    modifier = Modifier.weight(1f)
+                )
+                ModeChip(
+                    "FAVORITES",
+                    selected = favOnly,
+                    onClick = { favOnly = true },
+                    modifier = Modifier.weight(1f)
+                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(width = 52.dp, height = 36.dp)
+                        .metal(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onRandom)
+                ) {
+                    ShuffleGlyph(Color(0xFF1A1A1A), Modifier.size(22.dp))
+                }
             }
             HorizontalDivider(color = Silver.copy(alpha = 0.3f))
 
@@ -250,7 +362,11 @@ fun GitaApp(vm: PlayerViewModel) {
                             song = song,
                             isCurrent = song == current,
                             isFavorite = song.id in favorites,
-                            onPlay = { vm.play(song, shown, if (favOnly) Source.FAV else Source.ALL) },
+                            highlight = song.id == flashId,
+                            onHighlightDone = { if (flashId == song.id) flashId = null },
+                            onPlay = {
+                                vm.play(song, shown, if (favOnly) Source.FAV else Source.ALL)
+                            },
                             onToggleFavorite = { vm.toggleFavorite(song) },
                             onRemove = { vm.removeSong(song) }
                         )
@@ -292,7 +408,10 @@ fun GitaApp(vm: PlayerViewModel) {
                 ) {
                     MetalButton(
                         Glyph.Prev,
-                        onClick = { vm.previous() },
+                        onClick = {
+                            onSkip()
+                            vm.previous()
+                        },
                         width = 44.dp,
                         height = 38.dp
                     )
@@ -303,7 +422,10 @@ fun GitaApp(vm: PlayerViewModel) {
                     )
                     MetalButton(
                         Glyph.Next,
-                        onClick = { vm.next() },
+                        onClick = {
+                            onSkip()
+                            vm.next()
+                        },
                         width = 44.dp,
                         height = 38.dp
                     )
@@ -347,7 +469,43 @@ fun GitaApp(vm: PlayerViewModel) {
             enter = slideInVertically { it },
             exit = slideOutVertically { it }
         ) {
-            NowPlayingScreen(vm = vm, onClose = { showPlayer = false })
+            NowPlayingScreen(
+                vm = vm,
+                onClose = { showPlayer = false },
+                onSkip = onSkip
+            )
+        }
+    }
+}
+
+@Composable
+fun ShuffleGlyph(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        val a = Path().apply {
+            moveTo(w * 0.05f, h * 0.30f)
+            lineTo(w * 0.32f, h * 0.30f)
+            lineTo(w * 0.62f, h * 0.70f)
+            lineTo(w * 0.78f, h * 0.70f)
+        }
+        val b = Path().apply {
+            moveTo(w * 0.05f, h * 0.70f)
+            lineTo(w * 0.32f, h * 0.70f)
+            lineTo(w * 0.62f, h * 0.30f)
+            lineTo(w * 0.78f, h * 0.30f)
+        }
+        drawPath(a, color, style = stroke)
+        drawPath(b, color, style = stroke)
+        listOf(0.30f, 0.70f).forEach { y ->
+            val head = Path().apply {
+                moveTo(w * 0.78f, h * (y - 0.14f))
+                lineTo(w * 0.96f, h * y)
+                lineTo(w * 0.78f, h * (y + 0.14f))
+                close()
+            }
+            drawPath(head, color)
         }
     }
 }
@@ -392,17 +550,49 @@ fun SongRow(
     song: Song,
     isCurrent: Boolean,
     isFavorite: Boolean,
+    highlight: Boolean,
+    onHighlightDone: () -> Unit,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
     onRemove: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
+    // a band of light sweeps across the row, like a glint on brushed metal
+    val sweep = remember { Animatable(0f) }
+    LaunchedEffect(highlight) {
+        if (highlight) {
+            sweep.snapTo(0f)
+            sweep.animateTo(1f, tween(900, easing = FastOutSlowInEasing))
+            sweep.snapTo(0f)
+            onHighlightDone()
+        }
+    }
+
     Column {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
+                .drawBehind {
+                    val p = sweep.value
+                    if (p > 0f && p < 1f) {
+                        val w = size.width
+                        val cx = w * (-0.2f + 1.4f * p)
+                        val half = w * 0.3f
+                        drawRect(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    Color.Transparent,
+                                    Silver.copy(alpha = 0.22f),
+                                    Color.Transparent
+                                ),
+                                startX = cx - half,
+                                endX = cx + half
+                            )
+                        )
+                    }
+                }
                 .clickable(onClick = onPlay)
                 .padding(vertical = 12.dp)
         ) {
