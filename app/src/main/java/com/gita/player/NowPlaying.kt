@@ -174,6 +174,7 @@ fun NowPlayingScreen(
     val position by vm.position.collectAsState()
     val duration by vm.duration.collectAsState()
     val loop by vm.loop.collectAsState()
+    val favorites by vm.favorites.collectAsState()
     val context = LocalContext.current
 
     val song = current ?: return
@@ -237,6 +238,12 @@ fun NowPlayingScreen(
                     letterSpacing = 6.sp,
                     modifier = Modifier.align(Alignment.Center)
                 )
+                Box(Modifier.align(Alignment.CenterEnd)) {
+                    HeartIcon(
+                        filled = song.id in favorites,
+                        onClick = { vm.toggleFavorite(song) }
+                    )
+                }
             }
 
             BoxWithConstraints(

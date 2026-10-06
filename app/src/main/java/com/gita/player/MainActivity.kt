@@ -28,6 +28,7 @@ import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -153,6 +154,7 @@ fun GitaApp(vm: PlayerViewModel) {
     val settings by vm.settings.collectAsState()
     val removedIds by vm.removedIds.collectAsState()
     val prefs by vm.listPrefs.collectAsState()
+    val backup by vm.backup.collectAsState()
     val removedReady = removedIds != null
     val prefsReady = prefs != null
 
@@ -174,7 +176,10 @@ fun GitaApp(vm: PlayerViewModel) {
     var showSettings by remember { mutableStateOf(false) }
     var showRemoved by remember { mutableStateOf(false) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
-    BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showSettings) {
+        vm.validateBackup()
+        showSettings = false
+    }
     BackHandler(enabled = showRemoved) { showRemoved = false }
 
     val playSource by vm.playSource.collectAsState()
@@ -366,6 +371,7 @@ fun GitaApp(vm: PlayerViewModel) {
                             onHighlightDone = { if (flashId == song.id) flashId = null },
                             onPlay = {
                                 vm.play(song, shown, if (favOnly) Source.FAV else Source.ALL)
+                                flashId = song.id
                             },
                             onToggleFavorite = { vm.toggleFavorite(song) },
                             onRemove = { vm.removeSong(song) }
@@ -438,18 +444,26 @@ fun GitaApp(vm: PlayerViewModel) {
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it }
         ) {
-            SettingsScreen(
-                settings = settings ?: AppSettings(),
-                prefs = prefs ?: ListPrefs(),
-                removedCount = removedSongs.size,
-                onToggle = { vm.setFolderOnly(it) },
-                onFolderPicked = { vm.onFolderPicked(it) },
-                onSortBy = { vm.setSortBy(it) },
-                onAscending = { vm.setAscending(it) },
-                onShuffle = { vm.setShuffle(it) },
-                onOpenRemoved = { showRemoved = true },
-                onClose = { showSettings = false }
-            )
+            Box(Modifier.imePadding()) {
+                SettingsScreen(
+                    settings = settings ?: AppSettings(),
+                    prefs = prefs ?: ListPrefs(),
+                    removedCount = removedSongs.size,
+                    onToggle = { vm.setFolderOnly(it) },
+                    onFolderPicked = { vm.onFolderPicked(it) },
+                    onSortBy = { vm.setSortBy(it) },
+                    onAscending = { vm.setAscending(it) },
+                    onShuffle = { vm.setShuffle(it) },
+                    backup = backup ?: BackupSettings(),
+                    onBackupToggle = { vm.setBackupOn(it) },
+                    onBackupSave = { url, token -> vm.saveBackup(url, token) },
+                    onOpenRemoved = { showRemoved = true },
+                    onClose = {
+                        vm.validateBackup()
+                        showSettings = false
+                    }
+                )
+            }
         }
 
         AnimatedVisibility(

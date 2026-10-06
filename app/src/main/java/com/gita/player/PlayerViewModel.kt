@@ -27,6 +27,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val favoritesStore = FavoritesStore(app)
     private val settingsStore = SettingsStore(app)
+
+    private val backupStore = BackupStore(app)
+    private var backupStarted = false
+    private var queuedHash: String? = null
+
+    val backup: StateFlow<BackupSettings?> = backupStore.backup
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     private var controller: MediaController? = null
     private var progressJob: Job? = null
     private var appliedKey: String? = null
@@ -234,6 +241,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val prefs = listPrefs.value ?: ListPrefs()
         _songs.value = sortSongs(folderList.filter { it.id !in removed }, prefs)
         _removedSongs.value = allDevice.filter { it.id in removed }
+        maybeBackup()
     }
 
     // the sorted songs of one list (all songs, or only favorites)
@@ -417,6 +425,69 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             val changed = appliedKey != null && appliedKey != key
             appliedKey = key
             syncWithController(replace = changed)
+        }
+    }
+
+    // ---------- song-name backup (Google Sheets) ----------
+
+    // when the names of the All tab changed, queue a sync for the next time Wi-Fi is available
+    private fun maybeBackup() {
+        viewModelScope.launch {
+            val b = backupStore.backup.first()
+            if (!b.on || b.requestUrl() == null) return@launch
+
+            val app = getApplication<Application>()
+            if (!backupStarted) {
+                backupStarted = true
+                BackupScheduler.start(app)
+            }
+
+            val names = BackupNames.names(_songs.value)
+            if (names.isEmpty()) return@launch
+            val hash = BackupNames.fingerprint(names)
+            if (hash != b.lastHash && hash != queuedHash) {
+                queuedHash = hash
+                backupStore.setPending(true)
+                BackupScheduler.syncSoon(app)
+            }
+        }
+    }
+
+    fun setBackupOn(on: Boolean) {
+        viewModelScope.launch {
+            backupStore.setOn(on)
+            if (!on) {
+                BackupScheduler.stop(getApplication<Application>())
+                backupStarted = false
+                queuedHash = null
+            }
+        }
+    }
+
+    // both the URL and the token are needed; if either is empty the option turns off
+    fun saveBackup(url: String, token: String) {
+        viewModelScope.launch {
+            val u = url.trim()
+            val t = token.trim()
+            if (u.isEmpty() || t.isEmpty()) {
+                backupStore.setOn(false)
+                BackupScheduler.stop(getApplication<Application>())
+                backupStarted = false
+                queuedHash = null
+                return@launch
+            }
+            backupStore.setCredentials(u, t)
+            backupStarted = false
+            queuedHash = null
+            maybeBackup()
+        }
+    }
+
+    // called when Settings closes: the option cannot stay on without a URL
+    fun validateBackup() {
+        viewModelScope.launch {
+            val b = backupStore.backup.first()
+            if (b.on && b.requestUrl() == null) setBackupOn(false)
         }
     }
 

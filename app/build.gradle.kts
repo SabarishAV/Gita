@@ -55,8 +55,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
-
     implementation("androidx.media3:media3-session:1.10.1")
-
     implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 }

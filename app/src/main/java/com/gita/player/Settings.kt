@@ -216,6 +216,9 @@ fun SettingsScreen(
     onSortBy: (SortBy) -> Unit,
     onAscending: (Boolean) -> Unit,
     onShuffle: (Boolean) -> Unit,
+    backup: BackupSettings,
+    onBackupToggle: (Boolean) -> Unit,
+    onBackupSave: (String, String) -> Unit,
     onOpenRemoved: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -415,6 +418,13 @@ fun SettingsScreen(
                         MetalToggle(checked = prefs.shuffle, onCheckedChange = onShuffle)
                     }
                 }
+
+                // ---- Backup ----
+                BackupPanel(
+                    backup = backup,
+                    onToggle = onBackupToggle,
+                    onSave = onBackupSave
+                )
 
                 // ---- Removed songs ----
                 Row(
