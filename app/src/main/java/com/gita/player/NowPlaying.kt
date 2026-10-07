@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -177,7 +178,8 @@ fun NowPlayingScreen(
     vm: PlayerViewModel,
     onClose: () -> Unit,
     onSkip: () -> Unit = {},
-    coverEditEnabled: Boolean = false
+    coverEditEnabled: Boolean = false,
+    onSearch: () -> Unit = {}
 ) {
     val current by vm.current.collectAsState()
     val isPlaying by vm.isPlaying.collectAsState()
@@ -305,10 +307,20 @@ fun NowPlayingScreen(
                     modifier = Modifier.align(Alignment.Center)
                 )
                 Box(Modifier.align(Alignment.CenterEnd)) {
-                    HeartIcon(
-                        filled = song.id in favorites,
-                        onClick = { vm.toggleFavorite(song) }
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = "Search",
+                            tint = SilverDim,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clickable(onClick = onSearch)
+                        )
+                        HeartIcon(
+                            filled = song.id in favorites,
+                            onClick = { vm.toggleFavorite(song) }
+                        )
+                    }
                 }
             }
 

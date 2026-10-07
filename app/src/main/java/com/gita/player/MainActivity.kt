@@ -43,6 +43,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -70,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -197,7 +200,10 @@ fun GitaApp(vm: PlayerViewModel) {
     var showRemoved by remember { mutableStateOf(false) }
     // cover edit toggle: on while this screen lives, back to off when the app is reopened
     var coverEditEnabled by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchSource by remember { mutableStateOf(Source.ALL) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
+    BackHandler(enabled = showSearch) { showSearch = false }
     BackHandler(enabled = showSettings) {
         vm.validateBackup()
         showSettings = false
@@ -336,6 +342,19 @@ fun GitaApp(vm: PlayerViewModel) {
                         .align(Alignment.CenterEnd)
                         .size(30.dp)
                         .clickable { showSettings = true }
+                )
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = "Search",
+                    tint = SilverDim,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 48.dp)
+                        .size(30.dp)
+                        .clickable {
+                            searchSource = if (favOnly) Source.FAV else Source.ALL
+                            showSearch = true
+                        }
                 )
             }
             Text(
@@ -544,8 +563,150 @@ fun GitaApp(vm: PlayerViewModel) {
                 vm = vm,
                 onClose = { showPlayer = false },
                 onSkip = onSkip,
-                coverEditEnabled = coverEditEnabled
+                coverEditEnabled = coverEditEnabled,
+                onSearch = {
+                    searchSource = playSource
+                    showSearch = true
+                }
             )
+        }
+
+        AnimatedVisibility(
+            visible = showSearch,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it }
+        ) {
+            SearchScreen(
+                vm = vm,
+                source = searchSource,
+                onSong = { song, list ->
+                    vm.play(song, list, searchSource)
+                    flashId = song.id
+                    showPlayer = true
+                    showSearch = false
+                },
+                onClose = { showSearch = false }
+            )
+        }
+    }
+}
+
+@Composable
+fun SearchScreen(
+    vm: PlayerViewModel,
+    source: Source,
+    onSong: (Song, List<Song>) -> Unit,
+    onClose: () -> Unit
+) {
+    val songs by vm.songs.collectAsState()
+    val favorites by vm.favorites.collectAsState()
+    val current by vm.current.collectAsState()
+
+    // only the tab the search was opened from
+    val tabSongs = if (source == Source.FAV) songs.filter { it.id in favorites } else songs
+
+    var query by remember { mutableStateOf("") }
+    val filtered = if (query.isBlank()) {
+        tabSongs
+    } else {
+        tabSongs.filter {
+            it.title.contains(query, ignoreCase = true) ||
+                    it.artist.contains(query, ignoreCase = true)
+        }
+    }
+
+    GitaBackground(Modifier.pointerInput(Unit) {}) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "Back",
+                    tint = SilverDim,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clickable(onClick = onClose)
+                )
+                ChromeText(
+                    text = if (source == Source.FAV) "SEARCH FAVORITES" else "SEARCH",
+                    fontSize = 26.sp,
+                    fontFamily = FontFamily.Serif,
+                    letterSpacing = 5.sp,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+            }
+
+            val fieldShape = RoundedCornerShape(10.dp)
+            androidx.compose.foundation.text.BasicTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    color = Silver,
+                    fontSize = 16.sp
+                ),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(Silver),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp)
+                    .clip(fieldShape)
+                    .background(Panel)
+                    .border(1.dp, EdgeBrush, fieldShape)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                decorationBox = { inner ->
+                    if (query.isEmpty()) {
+                        Text(
+                            "SONG OR ARTIST",
+                            color = SilverDim,
+                            fontSize = 14.sp,
+                            letterSpacing = 2.sp
+                        )
+                    }
+                    inner()
+                }
+            )
+
+            Text(
+                text = "${filtered.size} ${if (filtered.size == 1) "RESULT" else "RESULTS"}",
+                color = SilverDim,
+                fontSize = 12.sp,
+                letterSpacing = 3.sp,
+                modifier = Modifier.padding(top = 14.dp, bottom = 10.dp)
+            )
+
+            if (filtered.isEmpty()) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                ) {
+                    Text(
+                        text = "NO MATCHES",
+                        color = SilverDim,
+                        fontSize = 12.sp,
+                        letterSpacing = 3.sp
+                    )
+                }
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    itemsIndexed(filtered, key = { _, song -> song.id }) { index, song ->
+                        SongRow(
+                            index = index,
+                            song = song,
+                            isCurrent = song == current,
+                            isFavorite = song.id in favorites,
+                            highlight = false,
+                            onHighlightDone = {},
+                            onPlay = { onSong(song, tabSongs) },
+                            onToggleFavorite = { vm.toggleFavorite(song) },
+                            onRemove = { vm.removeSong(song) }
+                        )
+                    }
+                }
+            }
         }
     }
 }
