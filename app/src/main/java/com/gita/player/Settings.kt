@@ -65,7 +65,8 @@ data class AppSettings(
 data class ListPrefs(
     val sortBy: SortBy = SortBy.NAME,
     val ascending: Boolean = true,
-    val shuffle: Boolean = false
+    val shuffle: Boolean = false,
+    val landscape: Boolean = false
 )
 
 private val Context.settingsDataStore by preferencesDataStore("settings")
@@ -78,6 +79,7 @@ class SettingsStore(private val context: Context) {
     private val sortKey = stringPreferencesKey("sort_by")
     private val ascKey = booleanPreferencesKey("sort_ascending")
     private val shuffleKey = booleanPreferencesKey("shuffle")
+    private val landscapeKey = booleanPreferencesKey("landscape")
     private val lastSongKey = longPreferencesKey("last_song")
     private val lastSourceKey = stringPreferencesKey("last_source")
 
@@ -94,7 +96,8 @@ class SettingsStore(private val context: Context) {
             sortBy = runCatching { SortBy.valueOf(p[sortKey] ?: "NAME") }
                 .getOrDefault(SortBy.NAME),
             ascending = p[ascKey] ?: true,
-            shuffle = p[shuffleKey] ?: false
+            shuffle = p[shuffleKey] ?: false,
+            landscape = p[landscapeKey] ?: false
         )
     }
 
@@ -118,6 +121,10 @@ class SettingsStore(private val context: Context) {
 
     suspend fun setShuffle(value: Boolean) {
         context.settingsDataStore.edit { it[shuffleKey] = value }
+    }
+
+    suspend fun setLandscape(value: Boolean) {
+        context.settingsDataStore.edit { it[landscapeKey] = value }
     }
 
     suspend fun setFolderOnly(enabled: Boolean) {
@@ -216,6 +223,7 @@ fun SettingsScreen(
     onSortBy: (SortBy) -> Unit,
     onAscending: (Boolean) -> Unit,
     onShuffle: (Boolean) -> Unit,
+    onLandscape: (Boolean) -> Unit = {},
     backup: BackupSettings,
     onBackupToggle: (Boolean) -> Unit,
     onBackupSave: (String, String) -> Unit,
@@ -418,6 +426,27 @@ fun SettingsScreen(
                             )
                         }
                         MetalToggle(checked = prefs.shuffle, onCheckedChange = onShuffle)
+                    }
+                }
+
+                // ---- Landscape mode ----
+                SettingsPanel {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "Allow landscape mode",
+                                color = Silver,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "When off, the app stays in portrait. When on, tilting the phone switches to landscape.",
+                                color = SilverDim,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp, end = 12.dp)
+                            )
+                        }
+                        MetalToggle(checked = prefs.landscape, onCheckedChange = onLandscape)
                     }
                 }
 

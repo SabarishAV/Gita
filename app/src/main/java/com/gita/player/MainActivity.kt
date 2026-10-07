@@ -206,6 +206,17 @@ fun GitaApp(vm: PlayerViewModel) {
 
     val playSource by vm.playSource.collectAsState()
     val restoreDone by vm.restoreDone.collectAsState()
+
+    // portrait unless the user turned on landscape mode
+    LaunchedEffect(prefs?.landscape) {
+        val activity = context as? android.app.Activity ?: return@LaunchedEffect
+        activity.requestedOrientation = if (prefs?.landscape == true) {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var viewInitialized by rememberSaveable { mutableStateOf(false) }
@@ -497,6 +508,7 @@ fun GitaApp(vm: PlayerViewModel) {
                     onSortBy = { vm.setSortBy(it) },
                     onAscending = { vm.setAscending(it) },
                     onShuffle = { vm.setShuffle(it) },
+                    onLandscape = { vm.setLandscape(it) },
                     backup = backup ?: BackupSettings(),
                     onBackupToggle = { vm.setBackupOn(it) },
                     onBackupSave = { url, token -> vm.saveBackup(url, token) },

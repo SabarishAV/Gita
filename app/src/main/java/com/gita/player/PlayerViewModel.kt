@@ -516,6 +516,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setShuffle(value) }
     }
 
+    fun setLandscape(value: Boolean) {
+        viewModelScope.launch { settingsStore.setLandscape(value) }
+    }
+
     fun removeSong(song: Song) {
         viewModelScope.launch { settingsStore.removeSong(song.id) }
     }
