@@ -59,6 +59,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -163,6 +169,20 @@ fun GitaApp(vm: PlayerViewModel) {
         if (granted && settings != null && removedReady && prefsReady) vm.loadSongsFromDevice()
     }
 
+    // re-check permission whenever the app comes back to the front
+    // (e.g. after an update, the system permission may have been revoked)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner.lifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                granted = ContextCompat.checkSelfPermission(context, permission) ==
+                        PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val songs by vm.songs.collectAsState()
     val removedSongs by vm.removedSongs.collectAsState()
     val current by vm.current.collectAsState()
@@ -175,6 +195,8 @@ fun GitaApp(vm: PlayerViewModel) {
     var showPlayer by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showRemoved by remember { mutableStateOf(false) }
+    // cover edit toggle: on while this screen lives, back to off when the app is reopened
+    var coverEditEnabled by remember { mutableStateOf(false) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
     BackHandler(enabled = showSettings) {
         vm.validateBackup()
@@ -315,7 +337,28 @@ fun GitaApp(vm: PlayerViewModel) {
                 fontSize = 12.sp,
                 letterSpacing = 3.sp,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 14.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 14.dp)
+                    .clickable(enabled = !granted) {
+                        if (androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(
+                                context as android.app.Activity, permission)) {
+                            launcher.launch(permission)
+                        } else {
+                            // asked before and blocked for good: send the user to the
+                            // system settings page for this app's permissions
+                            try {
+                                context.startActivity(
+                                    Intent(
+                                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null)
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                launcher.launch(permission)
+                            }
+                        }
+                    }
             )
 
             Row(
@@ -458,6 +501,8 @@ fun GitaApp(vm: PlayerViewModel) {
                     onBackupToggle = { vm.setBackupOn(it) },
                     onBackupSave = { url, token -> vm.saveBackup(url, token) },
                     onOpenRemoved = { showRemoved = true },
+                    coverEditEnabled = coverEditEnabled,
+                    onCoverEditToggle = { coverEditEnabled = it },
                     onClose = {
                         vm.validateBackup()
                         showSettings = false
@@ -486,7 +531,8 @@ fun GitaApp(vm: PlayerViewModel) {
             NowPlayingScreen(
                 vm = vm,
                 onClose = { showPlayer = false },
-                onSkip = onSkip
+                onSkip = onSkip,
+                coverEditEnabled = coverEditEnabled
             )
         }
     }

@@ -53,6 +53,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation("androidx.media3:media3-exoplayer:1.10.1")
+    implementation("net.jthink:jaudiotagger:3.0.1")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.media3:media3-session:1.10.1")

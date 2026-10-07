@@ -220,6 +220,8 @@ fun SettingsScreen(
     onBackupToggle: (Boolean) -> Unit,
     onBackupSave: (String, String) -> Unit,
     onOpenRemoved: () -> Unit,
+    coverEditEnabled: Boolean = false,
+    onCoverEditToggle: (Boolean) -> Unit = {},
     onClose: () -> Unit
 ) {
     val launcher = rememberLauncherForActivityResult(
@@ -416,6 +418,27 @@ fun SettingsScreen(
                             )
                         }
                         MetalToggle(checked = prefs.shuffle, onCheckedChange = onShuffle)
+                    }
+                }
+
+                // ---- Cover editing ----
+                SettingsPanel {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = "Edit cover art",
+                                color = Silver,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp
+                            )
+                            Text(
+                                text = "Show SET COVER / REMOVE COVER on the song page. Turns off again when the app is reopened.",
+                                color = SilverDim,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp, end = 12.dp)
+                            )
+                        }
+                        MetalToggle(checked = coverEditEnabled, onCheckedChange = onCoverEditToggle)
                     }
                 }
 

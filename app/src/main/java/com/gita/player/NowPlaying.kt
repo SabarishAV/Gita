@@ -1,10 +1,17 @@
 package com.gita.player
 
+import android.Manifest
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -59,7 +66,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.rememberCoroutineScope
 
 data class SongDetails(val art: Bitmap?, val album: String?, val year: String?)
 
@@ -167,7 +176,8 @@ fun SeekBar(
 fun NowPlayingScreen(
     vm: PlayerViewModel,
     onClose: () -> Unit,
-    onSkip: () -> Unit = {}
+    onSkip: () -> Unit = {},
+    coverEditEnabled: Boolean = false
 ) {
     val current by vm.current.collectAsState()
     val isPlaying by vm.isPlaying.collectAsState()
@@ -178,7 +188,8 @@ fun NowPlayingScreen(
     val context = LocalContext.current
 
     val song = current ?: return
-    val details by produceState<SongDetails?>(initialValue = null, key1 = song.id) {
+    var coverVersion by remember(song.id) { mutableStateOf(0) }
+    val details by produceState<SongDetails?>(initialValue = null, key1 = song.id, key2 = coverVersion) {
         value = null
         value = withContext(Dispatchers.IO) { loadSongDetails(context, song.uri) }
     }
@@ -197,6 +208,61 @@ fun NowPlayingScreen(
             holding = true
         } else {
             holding = false
+        }
+    }
+
+    val scope = rememberCoroutineScope()
+    var pendingImage by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingMime by remember { mutableStateOf("image/jpeg") }
+    var pendingRemove by remember { mutableStateOf(false) }
+
+    fun runPendingEdit() {
+        val image = pendingImage
+        val remove = pendingRemove
+        pendingImage = null
+        pendingRemove = false
+        if (image == null && !remove) return
+        scope.launch(Dispatchers.IO) {
+            if (remove) {
+                removeSongCover(context, song.uri)
+            } else if (image != null) {
+                setSongCover(context, song.uri, image, pendingMime)
+            }
+            withContext(Dispatchers.Main) { coverVersion++ }
+        }
+    }
+
+    val storagePerm = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> if (granted) runPendingEdit() }
+
+    val writeRequest = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result -> if (result.resultCode == android.app.Activity.RESULT_OK) runPendingEdit() }
+
+    // editing an audio file needs write access to it
+    fun ensureWriteAccess() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val sender = MediaStore.createWriteRequest(context.contentResolver, listOf(song.uri))
+            writeRequest.launch(IntentSenderRequest.Builder(sender).build())
+        } else {
+            storagePerm.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
+
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null) {
+                    pendingMime = context.contentResolver.getType(uri) ?: "image/jpeg"
+                    pendingImage = bytes
+                    pendingRemove = false
+                    withContext(Dispatchers.Main) { ensureWriteAccess() }
+                }
+            }
         }
     }
 
@@ -306,6 +372,63 @@ fun NowPlayingScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp)
                 )
+            }
+
+            if (coverEditEnabled && details != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(top = 12.dp)
+                ) {
+                    val chipShape = RoundedCornerShape(8.dp)
+                    val hasArt = details?.art != null
+                    if (hasArt) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .clip(chipShape)
+                                .background(Panel)
+                                .border(1.dp, EdgeBrush, chipShape)
+                                .clickable {
+                                    pendingRemove = true
+                                    pendingImage = null
+                                    ensureWriteAccess()
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "REMOVE COVER",
+                                color = SilverDim,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                letterSpacing = 2.sp
+                            )
+                        }
+                    } else {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .clip(chipShape)
+                                .background(Panel)
+                                .border(1.dp, EdgeBrush, chipShape)
+                                .clickable {
+                                    pickImage.launch(
+                                        PickVisualMediaRequest(
+                                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                                        )
+                                    )
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "SET COVER",
+                                color = SilverDim,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                letterSpacing = 2.sp
+                            )
+                        }
+                    }
+                }
             }
 
             SeekBar(
