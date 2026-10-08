@@ -33,6 +33,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Publish release
-        run: gh release create "$GITHUB_REF_NAME" app/build/outputs/apk/release/*.apk --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" app/build/outputs/apk/release/gita.apk --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
