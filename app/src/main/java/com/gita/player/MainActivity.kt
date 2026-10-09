@@ -86,6 +86,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -156,9 +157,36 @@ fun GitaApp(vm: PlayerViewModel) {
                     PackageManager.PERMISSION_GRANTED
         )
     }
+    // true once the system prompt has been shown at least once:
+    // tells "never asked yet" apart from "don't ask again"
+    var askedBefore by remember { mutableStateOf(false) }
+    var permanentlyDenied by remember { mutableStateOf(false) }
+
+    val activity = context as? ComponentActivity
+
+    fun canAskAgain(): Boolean =
+        activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, permission) } == true
+
+    fun openAppSettings() {
+        try {
+            context.startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null)
+                )
+            )
+        } catch (e: Exception) {
+            // ignore: staying on the dialog is better than crashing
+        }
+    }
+
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted = it }
+    ) {
+        granted = it
+        askedBefore = true
+        if (!it) permanentlyDenied = !canAskAgain()
+    }
 
     val settings by vm.settings.collectAsState()
     val removedIds by vm.removedIds.collectAsState()
@@ -167,19 +195,26 @@ fun GitaApp(vm: PlayerViewModel) {
     val removedReady = removedIds != null
     val prefsReady = prefs != null
 
-    LaunchedEffect(Unit) { if (!granted) launcher.launch(permission) }
     LaunchedEffect(granted, settings, removedReady, prefsReady) {
         if (granted && settings != null && removedReady && prefsReady) vm.loadSongsFromDevice()
     }
 
-    // re-check permission whenever the app comes back to the front
-    // (e.g. after an update, the system permission may have been revoked)
+    // re-check permission whenever the app comes to the front. While access is
+    // missing, the system prompt is shown again on every open (first time, or
+    // denied but not permanently); a permanent denial shows the blocking dialog.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner.lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 granted = ContextCompat.checkSelfPermission(context, permission) ==
                         PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    if (!askedBefore || canAskAgain()) {
+                        launcher.launch(permission)
+                    } else {
+                        permanentlyDenied = true
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -587,6 +622,65 @@ fun GitaApp(vm: PlayerViewModel) {
                 },
                 onClose = { showSearch = false }
             )
+        }
+
+        // no music access: block the whole app behind a dialog that leads to
+        // the exact place where the permission can be granted
+        if (!granted) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .clickable(enabled = true, onClick = {})
+                    .padding(32.dp)
+            ) {
+                val panelShape = RoundedCornerShape(10.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(panelShape)
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, panelShape)
+                        .padding(24.dp)
+                ) {
+                    ChromeText(
+                        text = "MUSIC ACCESS NEEDED",
+                        fontSize = 22.sp,
+                        fontFamily = FontFamily.Serif,
+                        letterSpacing = 3.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Gita needs access to your music files to list and play songs. The app cannot be used without it.",
+                        color = SilverDim,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 20.dp)
+                    )
+                    ModeChip(
+                        label = if (permanentlyDenied) "OPEN SETTINGS" else "ALLOW ACCESS",
+                        selected = true,
+                        onClick = {
+                            if (permanentlyDenied) openAppSettings()
+                            else launcher.launch(permission)
+                        },
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    )
+                    if (!permanentlyDenied) {
+                        Text(
+                            text = "OPEN APP SETTINGS",
+                            color = SilverDim,
+                            fontSize = 12.sp,
+                            letterSpacing = 2.sp,
+                            modifier = Modifier
+                                .padding(top = 14.dp)
+                                .clickable { openAppSettings() }
+                        )
+                    }
+                }
+            }
         }
     }
 }
