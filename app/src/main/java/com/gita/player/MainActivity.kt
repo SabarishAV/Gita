@@ -15,6 +15,8 @@ import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
@@ -25,6 +27,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,6 +83,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -88,6 +93,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.activity.result.IntentSenderRequest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -237,7 +244,10 @@ fun GitaApp(vm: PlayerViewModel) {
     var coverEditEnabled by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchSource by remember { mutableStateOf(Source.ALL) }
+    var songPendingDelete by remember { mutableStateOf<Song?>(null) }
+    var pendingLegacyDelete by remember { mutableStateOf<Song?>(null) }
     BackHandler(enabled = showPlayer) { showPlayer = false }
+    BackHandler(enabled = songPendingDelete != null) { songPendingDelete = null }
     BackHandler(enabled = showSearch) { showSearch = false }
     BackHandler(enabled = showSettings) {
         vm.validateBackup()
@@ -260,6 +270,52 @@ fun GitaApp(vm: PlayerViewModel) {
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    // system delete confirmation (Android 11+): reload the list whatever the answer was
+    val deleteRequest = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) {
+        songPendingDelete = null
+        pendingLegacyDelete = null
+        vm.loadSongsFromDevice()
+    }
+
+    // legacy write permission (Android 8-10): delete once it is granted
+    val legacyWritePerm = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { ok ->
+        val song = pendingLegacyDelete
+        pendingLegacyDelete = null
+        if (ok && song != null) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { context.contentResolver.delete(song.uri, null, null) }
+                vm.loadSongsFromDevice()
+            }
+        }
+    }
+
+    // permanently deletes the song file from the device
+    fun deleteSongForever(song: Song) {
+        songPendingDelete = null
+        if (Build.VERSION.SDK_INT >= 30) {
+            val sender = android.provider.MediaStore.createDeleteRequest(
+                context.contentResolver, listOf(song.uri)
+            )
+            deleteRequest.launch(IntentSenderRequest.Builder(sender).build())
+        } else if (ContextCompat.checkSelfPermission(
+                context, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { context.contentResolver.delete(song.uri, null, null) }
+                vm.loadSongsFromDevice()
+            }
+        } else {
+            pendingLegacyDelete = song
+            legacyWritePerm.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
+
     var viewInitialized by rememberSaveable { mutableStateOf(false) }
     var pendingScrollId by remember { mutableStateOf<Long?>(null) }
     var flashId by remember { mutableStateOf<Long?>(null) }
@@ -482,7 +538,8 @@ fun GitaApp(vm: PlayerViewModel) {
                                 flashId = song.id
                             },
                             onToggleFavorite = { vm.toggleFavorite(song) },
-                            onRemove = { vm.removeSong(song) }
+                            onRemove = { vm.removeSong(song) },
+                            onDelete = { songPendingDelete = song }
                         )
                     }
                 }
@@ -620,8 +677,81 @@ fun GitaApp(vm: PlayerViewModel) {
                     showPlayer = true
                     showSearch = false
                 },
-                onClose = { showSearch = false }
+                onClose = { showSearch = false },
+                onDelete = { songPendingDelete = it }
             )
+        }
+
+        // delete confirmation: the file is removed from the device for good
+        if (songPendingDelete != null) {
+            val target = songPendingDelete!!
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    // swallows touches silently: no ripple, so tapping the
+                    // dimmed area shows no flash and changes nothing
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(32.dp)
+            ) {
+                val panelShape = RoundedCornerShape(10.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(panelShape)
+                        .background(Panel)
+                        .border(1.dp, EdgeBrush, panelShape)
+                        .padding(24.dp)
+                ) {
+                    ChromeText(
+                        text = "DELETE SONG?",
+                        fontSize = 22.sp,
+                        fontFamily = FontFamily.Serif,
+                        letterSpacing = 3.sp,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = target.title,
+                        color = Silver,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 16.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 12.dp)
+                    )
+                    Text(
+                        text = "This will permanently delete the file from your device.",
+                        color = SilverDim,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 20.dp)
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ModeChip(
+                            label = "CANCEL",
+                            selected = false,
+                            onClick = { songPendingDelete = null },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ModeChip(
+                            label = "DELETE",
+                            selected = true,
+                            onClick = { deleteSongForever(target) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
         }
 
         // no music access: block the whole app behind a dialog that leads to
@@ -632,7 +762,13 @@ fun GitaApp(vm: PlayerViewModel) {
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.85f))
-                    .clickable(enabled = true, onClick = {})
+                    // swallows touches silently: no ripple, so tapping the
+                    // dimmed area shows no flash and changes nothing
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
                     .padding(32.dp)
             ) {
                 val panelShape = RoundedCornerShape(10.dp)
@@ -690,6 +826,7 @@ fun SearchScreen(
     vm: PlayerViewModel,
     source: Source,
     onSong: (Song, List<Song>) -> Unit,
+    onDelete: (Song) -> Unit,
     onClose: () -> Unit
 ) {
     val songs by vm.songs.collectAsState()
@@ -796,7 +933,8 @@ fun SearchScreen(
                             onHighlightDone = {},
                             onPlay = { onSong(song, tabSongs) },
                             onToggleFavorite = { vm.toggleFavorite(song) },
-                            onRemove = { vm.removeSong(song) }
+                            onRemove = { vm.removeSong(song) },
+                            onDelete = { onDelete(song) }
                         )
                     }
                 }
@@ -871,6 +1009,42 @@ fun ModeChip(
     }
 }
 
+// one entry in the row's overflow menu: its own tile with a gap around it,
+// and a small shrink + brighten while pressed so the tapped entry is obvious
+@Composable
+private fun MenuTile(label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.95f else 1f,
+        animationSpec = tween(120),
+        label = "menuPress"
+    )
+    val tileBg by animateColorAsState(
+        targetValue = if (pressed) Color(0xFF33332F) else Color(0xFF1D1D1D),
+        animationSpec = tween(120),
+        label = "menuPressBg"
+    )
+    val tileShape = RoundedCornerShape(8.dp)
+    DropdownMenuItem(
+        text = {
+            Text(
+                text = label,
+                color = Silver,
+                fontSize = 14.sp
+            )
+        },
+        onClick = onClick,
+        interactionSource = interaction,
+        modifier = Modifier
+            .padding(horizontal = 6.dp, vertical = 3.dp)
+            .graphicsLayer(scaleX = scale, scaleY = scale)
+            .clip(tileShape)
+            .background(tileBg)
+            .border(1.dp, Silver.copy(alpha = 0.16f), tileShape)
+    )
+}
+
 @Composable
 fun SongRow(
     index: Int,
@@ -881,7 +1055,8 @@ fun SongRow(
     onHighlightDone: () -> Unit,
     onPlay: () -> Unit,
     onToggleFavorite: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onDelete: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -964,38 +1139,28 @@ fun SongRow(
                 DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
-                    modifier = Modifier
-                        .background(Panel)
-                        .border(1.dp, EdgeBrush, RoundedCornerShape(8.dp))
+                    shape = RoundedCornerShape(10.dp),
+                    containerColor = Panel,
+                    modifier = Modifier.border(
+                        1.5.dp,
+                        Silver.copy(alpha = 0.55f),
+                        RoundedCornerShape(10.dp)
+                    )
                 ) {
                     if (isFavorite) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = "Remove from favorites",
-                                    color = Silver,
-                                    fontSize = 14.sp
-                                )
-                            },
-                            onClick = {
-                                menuOpen = false
-                                onToggleFavorite()
-                            }
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = "Remove from list",
-                                color = Silver,
-                                fontSize = 14.sp
-                            )
-                        },
-                        onClick = {
+                        MenuTile("Remove from favorites") {
                             menuOpen = false
-                            onRemove()
+                            onToggleFavorite()
                         }
-                    )
+                    }
+                    MenuTile("Remove from list") {
+                        menuOpen = false
+                        onRemove()
+                    }
+                    MenuTile("Delete song") {
+                        menuOpen = false
+                        onDelete()
+                    }
                 }
             }
         }
